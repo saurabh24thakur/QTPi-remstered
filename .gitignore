@@ -1,0 +1,4 @@
+node_modules/
+.qtpi/
+*.log
+.DS_Store
