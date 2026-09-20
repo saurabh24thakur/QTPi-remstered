@@ -154,6 +154,19 @@ export async function interactiveSetup() {
         return 'That doesn\'t look like a valid API key';
       },
     },
+    
+{
+  type: 'input',
+  name: 'qdrantUrl',
+  message: 'Qdrant URL (for RAG search):',
+  default: 'http://localhost:6333',
+},
+{
+  type: 'password',
+  name: 'qdrantKey',
+  message: 'Qdrant API key (leave empty for local Docker):',
+  when: (answers) => !answers.qdrantUrl.includes('localhost'),
+},
     {
       type: 'input',
       name: 'model',
