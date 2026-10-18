@@ -180,7 +180,6 @@ program
     await startAgent({
       mode: 'ask',
       initialQuestion: question,
-      oneShot: true,
     });
   });
 

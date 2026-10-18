@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import readline from 'readline';
+import { createInterface } from 'readline/promises';
 
 
 import { getConfig, getAllConfig } from './config/configManager.js';
@@ -10,7 +10,10 @@ import { createRegistry } from './tools/ToolRegistry.js';
 import { registerFileTools } from './tools/fileManager.js';
 import { registerTerminalTools } from './tools/TerminalRunner.js';
 import { registerGitTools } from './tools/GitManager.js';
-import { registerSearchTools } from './tools/SearchTool.js';
+import { registerSearchTools } from './tools/searchTool.js';
+import { registerWebSearchTools } from './tools/webSearchTool.js';
+import { registerWebCrawlTools } from './tools/webCrawlTool.js';
+import { createWebRuntime } from './tools/web/webRuntime.js';
 
 // RAG/Qdrant tool
 import { registerRepoSearchTool } from './rag/RepoSearch.js';
@@ -58,6 +61,12 @@ export async function startAgent(options = {}) {
 
   // Register RAG Qdrant search tool
   const configWrapper = { get: (key) => getConfig(key) };
+
+  // Shared web services (SSRF policy, result cache, logger, limits).
+  const webRuntime = createWebRuntime(configWrapper);
+
+  registerWebSearchTools(toolRegistry, configWrapper, webRuntime);
+  registerWebCrawlTools(toolRegistry, configWrapper, webRuntime);
   registerRepoSearchTool(toolRegistry, configWrapper, provider);
 
   //  Memory   
@@ -101,28 +110,22 @@ export async function startAgent(options = {}) {
   //  Interactive Terminal REPL Loop 
   renderer.renderWelcome(currentMode.name);
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: chalk.cyan('  You: '),
-  });
+  // Inquirer pauses stdin when its menu prompts close; resume it before
+  // handing input to the interactive chat loop.
+  if (!process.stdin.destroyed) process.stdin.resume();
 
-  rl.prompt();
+  let rl = null;
+  let interrupted = false;
+  const handleInterrupt = () => { interrupted = true; rl?.close(); };
+  process.on('SIGINT', handleInterrupt);
 
-  // Handle line inputs
-  rl.on('line', async (line) => {
+  const processInput = async (line) => {
     const input = line.trim();
-
-    if (!input) {
-      rl.prompt();
-      return;
-    }
-
-    // Handle slash commands (/ask, /plan, /actions, /memory, etc.)
+    if (!input) return true;
     if (input.startsWith('/')) {
       const result = await handleSlashCommand(input, {
         modes,
-        setCurrentMode: (m) => { currentMode = m; },
+        setCurrentMode: (mode) => { currentMode = mode; },
         agent,
         renderer,
         memory: longTermMemory,
@@ -130,41 +133,44 @@ export async function startAgent(options = {}) {
         workingDir,
         provider,
       });
-
-      if (result === 'exit') {
-        rl.close();
-        return;
-      }
-
-      rl.prompt();
-      return;
+      return result !== 'exit';
     }
-
-    // Process normal prompt using current mode
     try {
       await currentMode.processInput(input);
     } catch (error) {
       renderer.renderError(error.message);
     }
+    return true;
+  };
 
-    rl.prompt();
-  });
-
-  // Handle graceful exit (Ctrl+D or /exit)
-  rl.on('close', async () => {
-    console.log(chalk.magenta('\n  🧁 QTPI is going to sleep. Sweet dreams!\n'));
+  try {
+    if (options.initialQuestion) await processInput(options.initialQuestion);
+    while (!interrupted) {
+      // Recreate the reader for each turn. This prevents an input interface
+      // closed by a previous prompt from ending the whole chat session.
+      if (process.stdin.destroyed || process.stdin.readableEnded) break;
+      process.stdin.resume();
+      rl = createInterface({ input: process.stdin, output: process.stdout });
+      let line;
+      try {
+        line = await rl.question(chalk.cyan('  You: '));
+      } catch {
+        if (interrupted || process.stdin.destroyed || process.stdin.readableEnded) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        continue;
+      } finally {
+        if (rl && !rl.closed) rl.close();
+        rl = null;
+      }
+      if (!(await processInput(line))) break;
+    }
+  } finally {
+    process.off('SIGINT', handleInterrupt);
+    if (rl && !rl.closed) rl.close();
+    console.log(chalk.magenta('\n  QTPI is going to sleep. Sweet dreams!\n'));
     await agent.endSession();
-    process.exit(0);
-  });
-
-  // Handle Ctrl+C
-  process.on('SIGINT', async () => {
-    console.log(chalk.magenta('\n\n  🧁 QTPI is going to sleep. Sweet dreams!\n'));
-    await agent.endSession();
-    process.exit(0);
-  });
+  }
 }
-
 
 
 async function handleSlashCommand(input, context) {

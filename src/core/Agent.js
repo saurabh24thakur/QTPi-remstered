@@ -27,6 +27,7 @@ export function createAgent({ provider, tools, memory, renderer, config, working
 
 ## Your Capabilities
 You can read/write files, edit code, run shell commands, perform git actions, search code, and query repository embeddings.
+You can also search the public web (web_search) and fetch/crawl web pages (web_crawl) when you need information that is not in the local repository — e.g. library docs, error messages, or current best practices. Prefer web_search to find a page, then web_crawl to read it.
 
 ## Working Rules
 1. **READ BEFORE EDITING**: Always read files before making changes to understand existing code.

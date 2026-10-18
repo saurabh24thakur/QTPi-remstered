@@ -368,6 +368,19 @@ OPENROUTER_KEY=your_api_key
 ```
 
 
+Optional web tools configuration (see [`docs/WEB_TOOLS.md`](docs/WEB_TOOLS.md)):
+
+```env
+# Web search (DuckDuckGo works with no key; others are paid)
+QTPI_SEARCH_PROVIDER=duckduckgo
+QTPI_SEARCH_API_KEY=your_search_api_key
+
+# Web crawler
+QTPI_CRAWLER_MAX_PAGES=5
+QTPI_CRAWLER_RESPECT_ROBOTS=true
+```
+
+
 Optional Telegram configuration:
 
 
@@ -625,6 +638,13 @@ Supported actions:
 | delete_file | Stage deletion |
 | execute_shell | Run commands |
 | list_skills | Skill discovery |
+| web_search | Search the public web (title/url/snippet) |
+| web_crawl | Fetch a page and extract readable content |
+
+> 📖 Full parameter, return-shape, config, and cost/rate-limit reference:
+> [`docs/WEB_TOOLS.md`](docs/WEB_TOOLS.md).
+> Run the end-to-end demo with
+> `node examples/web-tools-example.mjs "node.js fetch retry backoff"`.
 
 
 ---
