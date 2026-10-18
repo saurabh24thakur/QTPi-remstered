@@ -1,145 +1,94 @@
-import { QdrantClient } from '@qdrant/js-client-rest';
+import fs from 'fs';
+import path from 'path';
 import chalk from 'chalk';
 
-
-
-export function createVectorStore(config) {
-
-  const qdrantUrl = config.get('qdrantUrl') || 'http://localhost:6333';
-  const qdrantKey = config.get('qdrantKey');
-
-
-  const collectionName = 'qtpi_' + hashString(process.cwd());
-
-
-  const client = new QdrantClient({
-    url: qdrantUrl,
-    apiKey: qdrantKey || undefined,
-  });
-
-
-
-  async function ensureCollection(vectorSize) {
+export async function indexRepository(workingDir, store, provider) {
+  const SKIP = [
+    'node_modules', '.git', '.qtpi', 'dist', 'build', 
+    '.next', '__pycache__', '.venv', 'venv', 'coverage',
+    '.DS_Store'
+  ];
+  
+  function getFiles(dir) {
+    const results = [];
+    const items = fs.readdirSync(dir, { withFileTypes: true });
+    for (const item of items) {
+      if (SKIP.includes(item.name)) continue;
+      
+      const fullPath = path.join(dir, item.name);
+      if (item.isDirectory()) {
+        results.push(...getFiles(fullPath));
+      } else {
+        const ext = path.extname(item.name);
+        if (['.js', '.jsx', '.ts', '.tsx', '.py', '.md', '.json', '.html', '.css', '.txt'].includes(ext)) {
+          results.push(fullPath);
+        }
+      }
+    }
+    return results;
+  }
+  
+  const files = getFiles(workingDir);
+  console.log(chalk.cyan(`  Found ${files.length} files to index.`));
+  
+  const chunks = [];
+  
+  for (const file of files) {
+    let content;
     try {
-      const collections = await client.getCollections();
-      const exists = collections.collections.some(c => c.name === collectionName);
+      content = fs.readFileSync(file, 'utf-8');
+    } catch (e) {
+      continue;
+    }
+    
+    const lines = content.split('\n');
+    const relativePath = path.relative(workingDir, file).replace(/\\/g, '/');
+    
+    const chunkSize = 100;
+    for (let i = 0; i < lines.length; i += chunkSize) {
+      const chunkLines = lines.slice(i, i + chunkSize);
+      const chunkContent = chunkLines.join('\n');
+      
+      if (chunkContent.trim().length === 0) continue;
+      
+      chunks.push({
+        filePath: relativePath,
+        content: chunkContent,
+        startLine: i + 1,
+        endLine: i + chunkLines.length,
+      });
+    }
+  }
+  
+  if (chunks.length === 0) {
+    console.log(chalk.yellow(`  No chunks found to index.`));
+    return;
+  }
+  
+  console.log(chalk.cyan(`  Generated ${chunks.length} chunks. Generating embeddings...`));
+  
+  if (typeof provider.embed !== 'function') {
+    throw new Error(`Current provider (${provider.name}) does not support embeddings. Use OpenAI, Gemini, or Ollama.`);
+  }
 
-      if (!exists) {
-        // Create it
-        await client.createCollection(collectionName, {
-          vectors: {
-            size: vectorSize,
-            distance: 'Cosine',  
-          },
-        });
-        console.log(chalk.gray(`  Created Qdrant collection: ${collectionName}`));
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+    const batch = chunks.slice(i, i + BATCH_SIZE);
+    const texts = batch.map(c => `File: ${c.filePath}\nLines: ${c.startLine}-${c.endLine}\n\n${c.content}`);
+    
+    try {
+      const embeddings = await provider.embed(texts);
+      for (let j = 0; j < batch.length; j++) {
+        batch[j].embedding = embeddings[j];
       }
     } catch (error) {
-      throw new Error(
-        `Could not connect to Qdrant at ${qdrantUrl}\n` +
-        `Make sure Qdrant is running:\n` +
-        `  docker run -p 6333:6333 qdrant/qdrant\n` +
-        `Or set Qdrant Cloud URL: qtpi config --qdrant-url YOUR_URL\n\n` +
-        `Error: ${error.message}`
-      );
+      console.log(chalk.red(`  Failed to embed batch: ${error.message}`));
+      throw error;
     }
+    console.log(chalk.gray(`  Embedded ${Math.min(i + BATCH_SIZE, chunks.length)} / ${chunks.length} chunks`));
   }
-
-
-
-  async function saveChunks(chunks) {
-    if (chunks.length === 0) return;
-
-    
-    await ensureCollection(chunks[0].embedding.length);
-
-   
-    try {
-      await client.delete(collectionName, {
-        filter: {}, 
-        wait: true,
-      });
-    } catch {
-      
-    }
-
-    // Upload in batches of 100 (Qdrant handles this efficiently)
-    const BATCH_SIZE = 100;
-    for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-      const batch = chunks.slice(i, i + BATCH_SIZE);
-
-      const points = batch.map((chunk, index) => ({
-        id: i + index,  // Unique numeric ID
-        vector: chunk.embedding,
-        payload: {
-          filePath: chunk.filePath,
-          content: chunk.content,
-          startLine: chunk.startLine,
-          endLine: chunk.endLine,
-        },
-      }));
-
-      await client.upsert(collectionName, {
-        points: points,
-        wait: true,
-      });
-    }
-  }
-
-
-  async function search(queryEmbedding, topK = 5) {
-    try {
-      const results = await client.search(collectionName, {
-        vector: queryEmbedding,
-        limit: topK,
-        with_payload: true,
-      });
-
-      // Convert Qdrant results to our standard format
-      return results.map(result => ({
-        filePath: result.payload.filePath,
-        content: result.payload.content,
-        startLine: result.payload.startLine,
-        endLine: result.payload.endLine,
-        score: result.score,
-      }));
-    } catch (error) {
-      throw new Error(`Qdrant search failed: ${error.message}`);
-    }
-  }
-
-
-
-  async function isIndexed() {
-    try {
-      const collections = await client.getCollections();
-      const exists = collections.collections.some(c => c.name === collectionName);
-
-      if (!exists) return false;
-
-      const info = await client.getCollection(collectionName);
-      return info.points_count > 0;
-    } catch {
-      return false;
-    }
-  }
-
-
-  return {
-    saveChunks,
-    search,
-    isIndexed,
-  };
-}
-
-
-
-function hashString(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;  // Convert to 32-bit integer
-  }
-  return Math.abs(hash).toString(36);
+  
+  console.log(chalk.cyan(`  Saving chunks to Vector Store...`));
+  await store.saveChunks(chunks);
+  console.log(chalk.green(`  ✅ Successfully indexed ${chunks.length} chunks from ${files.length} files.`));
 }

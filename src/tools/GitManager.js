@@ -1,6 +1,6 @@
 
 import { execSync } from 'child_process';
-import { registerTool } from './toolsRegistory.js';
+import { registerTool } from './ToolRegistry.js';
 
 export function registerGitTools(registry, workingDir) {
 

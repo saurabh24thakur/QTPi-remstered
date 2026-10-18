@@ -93,6 +93,7 @@ function convertToGeminiFormat(msg) {
           name: tc.name,
           args: tc.arguments,
         },
+        thoughtSignature: tc.thoughtSignature
       });
     }
 
@@ -126,6 +127,7 @@ function parseGeminiResponse(response) {
         id: `gemini-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         name: part.functionCall.name,
         arguments: part.functionCall.args || {},
+        thoughtSignature: part.thoughtSignature
       });
     }
   }
@@ -178,6 +180,7 @@ async function handleStreaming(geminiModel, history, onStream) {
           id: `gemini-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           name: part.functionCall.name,
           arguments: part.functionCall.args || {},
+          thoughtSignature: part.thoughtSignature
         });
       }
     }

@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { diffLines } from 'diff';
 import chalk from 'chalk';
-import { registerTool } from './toolsRegistory.js';
+import { registerTool } from './ToolRegistry.js';
 
 
 export function registerFileTools(registry, workingDir) {

@@ -1,7 +1,7 @@
 
 import { createConversation } from '../memory/ConversationHistory.js';
 import { createActionTracker } from './ActionTracker.js';
-import { executeTool } from '../tools/ToolRegistry.js';
+import { executeTool, getToolDefinitions } from '../tools/ToolRegistry.js';
 import { needsApproval, askUserApproval } from '../tools/ApprovalGate.js';
 
 
@@ -16,7 +16,6 @@ export function createAgent({ provider, tools, memory, renderer, config, working
   // Safety limit to prevent infinite tool loops
   const maxIterations = 25;
 
-  // Initialize the AI's identity
   initializeSystemPrompt();
 
 
@@ -66,7 +65,7 @@ ${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Me
       try {
         aiResponse = await provider.chat(
           conversation.getMessages(),
-          tools ? tools.getDefinitions() : [],
+          tools ? getToolDefinitions(tools) : [],
           (token) => renderer.streamToken(token) //streming response
         );
       } catch (error) {

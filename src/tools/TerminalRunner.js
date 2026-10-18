@@ -1,7 +1,7 @@
 
 import { execSync } from 'child_process';
 import chalk from 'chalk';
-import { registerTool } from './toolsRegistory.js';
+import { registerTool } from './ToolRegistry.js';
 
 
 // Commands that could destroy a system — never allow these

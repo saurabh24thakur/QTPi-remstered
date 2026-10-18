@@ -139,7 +139,7 @@ export async function interactiveSetup() {
         { name: 'OpenRouter (100+ models, one key)', value: 'openrouter' },
         { name: 'Groq (Ultra-fast inference)', value: 'groq' },
         { name: 'Anthropic (Claude Sonnet, Opus)', value: 'anthropic' },
-        { name: 'Google Gemini (gemini-2.0-flash)', value: 'gemini' },
+        { name: 'Google Gemini (gemini-3.6-flash)', value: 'gemini' },
         { name: 'Ollama (Local, Free, Private)', value: 'ollama' },
       ],
     },
@@ -178,7 +178,7 @@ export async function interactiveSetup() {
           anthropic: 'claude-sonnet-4-20250514',
           ollama: 'llama3',
           openrouter: 'google/gemini-1.5-pro',
-          gemini: 'gemini-1.5-pro',
+          gemini: 'gemini-3.6-flash',
           groq: 'llama3-70b-8192',
         };
         return smartDefaults[previousAnswers.provider];

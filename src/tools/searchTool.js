@@ -2,7 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import { registerTool } from './toolsRegistory.js';
+import { registerTool } from './ToolRegistry.js';
 
 
 export function registerSearchTools(registry, workingDir) {
