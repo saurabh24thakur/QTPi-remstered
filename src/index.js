@@ -15,6 +15,11 @@ import { registerWebSearchTools } from './tools/webSearchTool.js';
 import { registerWebCrawlTools } from './tools/webCrawlTool.js';
 import { createWebRuntime } from './tools/web/webRuntime.js';
 
+// browser control
+import { registerBrowserTools } from './tools/browserTool.js';
+import { registerBrowserCommandTools } from './tools/browserCommandTool.js';
+import { createBrowserRuntime } from './tools/browser/browserRuntime.js';
+
 // RAG/Qdrant tool
 import { registerRepoSearchTool } from './rag/RepoSearch.js';
 import { createVectorStore } from './rag/VectorStore.js';
@@ -67,6 +72,14 @@ export async function startAgent(options = {}) {
 
   registerWebSearchTools(toolRegistry, configWrapper, webRuntime);
   registerWebCrawlTools(toolRegistry, configWrapper, webRuntime);
+
+  // Shared browser services (one Chromium instance, one page map, one
+  // logger, one SSRF policy). The browser launches lazily on first use,
+  // so users who never touch these tools pay nothing.
+  const browserRuntime = createBrowserRuntime(configWrapper, { logger: webRuntime.logger });
+
+  registerBrowserTools(toolRegistry, configWrapper, browserRuntime);
+  registerBrowserCommandTools(toolRegistry, configWrapper, browserRuntime);
   registerRepoSearchTool(toolRegistry, configWrapper, provider);
 
   //  Memory   

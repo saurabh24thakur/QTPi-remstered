@@ -50,6 +50,22 @@ const DEFAULTS = {
   webLogToFile: true,             // append JSONL to webLogFile
   webLogToConsole: false,         // echo one-line summaries to stderr
   webLogFile: '',                 // '' -> ~/.qtpi/web.log
+
+  // Browser control (browser / browser_command tools)
+  browserHeadless: true,          // run Chromium headless
+  browserTimeout: 30000,          // ms per browser action
+  browserUserAgent: 'QTPi/1.0 (+https://qtpi.dev)',
+  browserViewportWidth: 1280,
+  browserViewportHeight: 800,
+  browserDownloadDir: '',         // '' -> <cwd>/.qtpi/downloads
+  browserMaxPages: 5,             // max concurrent named pages/tabs
+  browserConfirmDestructive: true,// require confirm:true for eval
+  browserSsrfProtection: true,    // block private/loopback targets
+  browserAllowPrivateHosts: false,// escape hatch: allow internal hosts
+  browserLogEnabled: false,       // log each browser action
+  browserLogToFile: true,
+  browserLogToConsole: false,
+  browserLogFile: '',             // '' -> ~/.qtpi/browser.log
 };
 
 let globalConfig = null;
@@ -91,6 +107,20 @@ const ENV_MAP = {
   webLogToFile: 'QTPI_WEB_LOG_TO_FILE',
   webLogToConsole: 'QTPI_WEB_LOG_TO_CONSOLE',
   webLogFile: 'QTPI_WEB_LOG_FILE',
+  browserHeadless: 'QTPI_BROWSER_HEADLESS',
+  browserTimeout: 'QTPI_BROWSER_TIMEOUT',
+  browserUserAgent: 'QTPI_BROWSER_USER_AGENT',
+  browserViewportWidth: 'QTPI_BROWSER_VIEWPORT_WIDTH',
+  browserViewportHeight: 'QTPI_BROWSER_VIEWPORT_HEIGHT',
+  browserDownloadDir: 'QTPI_BROWSER_DOWNLOAD_DIR',
+  browserMaxPages: 'QTPI_BROWSER_MAX_PAGES',
+  browserConfirmDestructive: 'QTPI_BROWSER_CONFIRM_DESTRUCTIVE',
+  browserSsrfProtection: 'QTPI_BROWSER_SSRF_PROTECTION',
+  browserAllowPrivateHosts: 'QTPI_BROWSER_ALLOW_PRIVATE_HOSTS',
+  browserLogEnabled: 'QTPI_BROWSER_LOG_ENABLED',
+  browserLogToFile: 'QTPI_BROWSER_LOG_TO_FILE',
+  browserLogToConsole: 'QTPI_BROWSER_LOG_TO_CONSOLE',
+  browserLogFile: 'QTPI_BROWSER_LOG_FILE',
 };
 
 function makeSureFolderExists(folderPath) {
