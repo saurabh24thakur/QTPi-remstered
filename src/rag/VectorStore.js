@@ -3,10 +3,25 @@ import chalk from 'chalk';
 
 
 
+// Coerce a config value into the boolean the Qdrant client expects.
+// Config values may arrive as a real boolean (from config.json) or as a
+// string (from an env var like QTPI_QDRANT_CHECK_COMPATIBILITY=true).
+// Exported so it can be unit-tested without constructing a client.
+export function resolveCheckCompatibility(value) {
+  return value === true || value === 'true';
+}
+
 export function createVectorStore(config) {
 
   const qdrantUrl = config.get('qdrantUrl') || 'http://localhost:6333';
   const qdrantKey = config.get('qdrantKey');
+
+  // Skip the SDK's client/server version probe by default. The probe fires an
+  // async root() request on construction and, when Qdrant is unreachable,
+  // prints "Failed to obtain server version..." to the console — noisy for a
+  // tool that is only used on demand. Set qdrantCheckCompatibility=true (or
+  // QTPI_QDRANT_CHECK_COMPATIBILITY=true) to re-enable it.
+  const checkCompatibility = resolveCheckCompatibility(config.get('qdrantCheckCompatibility'));
 
   
   const collectionName = 'qtpi_' + hashString(process.cwd());
@@ -15,6 +30,7 @@ export function createVectorStore(config) {
   const client = new QdrantClient({
     url: qdrantUrl,
     apiKey: qdrantKey || undefined,
+    checkCompatibility,
   });
 
 

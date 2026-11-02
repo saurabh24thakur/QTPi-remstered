@@ -3,9 +3,10 @@ import { createConversation } from '../memory/ConversationHistory.js';
 import { createActionTracker } from './ActionTracker.js';
 import { executeTool, getToolDefinitions } from '../tools/ToolRegistry.js';
 import { needsApproval, askUserApproval } from '../tools/ApprovalGate.js';
+import { formatSkillCatalog } from '../skills/skillContext.js';
 
 
-export function createAgent({ provider, tools, memory, renderer, config, workingDir }) {
+export function createAgent({ provider, tools, memory, renderer, config, workingDir, skills }) {
 
 
   const conversation = createConversation(50);
@@ -23,6 +24,10 @@ export function createAgent({ provider, tools, memory, renderer, config, working
   function initializeSystemPrompt() {
     const pastMemories = memory ? memory.recall() : '';
 
+    // Level-1 skill catalog (name + description only) — keeps the base
+    // prompt small while telling the model which skills it can load.
+    const skillCatalog = skills && skills.enabled ? formatSkillCatalog(skills) : '';
+
     const systemPrompt = `You are QTPI (pronounced "cutie pie"), an expert AI coding agent that lives in the user's terminal. You write clean, precise, and production-ready code.
 
 ## Your Capabilities
@@ -38,7 +43,7 @@ You can also search the public web (web_search) and fetch/crawl web pages (web_c
 ## Project Context
 - Working Directory: ${workingDir}
 
-${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Memory: First session on this project.'}`;
+${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Memory: First session on this project.'}${skillCatalog ? `\n\n${skillCatalog}` : ''}`;
 
     conversation.addSystemMessage(systemPrompt);
   }

@@ -13,7 +13,10 @@
     "test:web": "node --test test/web-tools.test.js",
     "test:live": "node examples/web-tools-example.mjs",
     "test:browser": "node --test test/browser-tools.test.js",
-    "test:browser:live": "node examples/browser-tools-example.mjs"
+    "test:browser:live": "node examples/browser-tools-example.mjs",
+    "test:skills": "node --test test/skills.test.js test/skills-agent.test.js",
+    "test:skills:live": "node examples/skills-example.mjs",
+    "test:config": "node --test test/config.test.js"
   },
   "keywords": [
     "ai",

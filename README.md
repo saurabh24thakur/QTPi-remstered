@@ -381,6 +381,17 @@ QTPI_CRAWLER_RESPECT_ROBOTS=true
 ```
 
 
+Optional browser control configuration (see [`docs/BROWSER_TOOLS.md`](docs/BROWSER_TOOLS.md)):
+
+```env
+# Browser (Playwright Chromium) — launches lazily on first use
+QTPI_BROWSER_HEADLESS=true
+QTPI_BROWSER_TIMEOUT=30000
+QTPI_BROWSER_CONFIRM_DESTRUCTIVE=true
+QTPI_BROWSER_SSRF_PROTECTION=true
+```
+
+
 Optional Telegram configuration:
 
 
@@ -637,14 +648,47 @@ Supported actions:
 | modify_file | Stage modifications |
 | delete_file | Stage deletion |
 | execute_shell | Run commands |
-| list_skills | Skill discovery |
+| skill_list | List installed skills (name + description) |
+| skill_read | Load a skill's instructions or a bundled resource |
+| skill_run | Run a skill's bundled script (opt-in) |
 | web_search | Search the public web (title/url/snippet) |
 | web_crawl | Fetch a page and extract readable content |
+| browser | Drive a real Chromium browser — one action per call |
+| browser_command | Run a sequence of browser actions in one call |
 
 > 📖 Full parameter, return-shape, config, and cost/rate-limit reference:
 > [`docs/WEB_TOOLS.md`](docs/WEB_TOOLS.md).
 > Run the end-to-end demo with
 > `node examples/web-tools-example.mjs "node.js fetch retry backoff"`.
+
+### 🖥️ Browser Control
+
+QTPi can drive a **real Chromium browser** (via Playwright) to navigate, click, type,
+read pages, take screenshots, and script multi-step flows. Two tools share one browser
+instance and one page map:
+
+- **`browser`** — one action per call (`goto`, `click`, `type`, `read`, `screenshot`, `eval`, …).
+- **`browser_command`** — a sequence of actions in one call (`goto → type → click → read`).
+
+The browser launches **lazily** on first use, `goto` is SSRF-guarded, and `eval` requires
+`confirm: true` by default. Configure with `qtpi config` or the `QTPI_BROWSER_*` env vars.
+
+> 📖 Full reference — actions, parameters, config keys, and safety notes:
+> [`docs/BROWSER_TOOLS.md`](docs/BROWSER_TOOLS.md).
+> Run the live demo with `node examples/browser-tools-example.mjs`.
+
+### 🧩 Skills
+
+Skills are reusable, on-demand instruction sets. A skill is a folder containing
+a `SKILL.md` (YAML frontmatter + Markdown instructions) that the agent loads
+only when it is relevant — keeping the base prompt small. Drop your own skills
+in `./.qtpi/skills/` (project) or `~/.qtpi/skills/` (global); QTPi discovers
+them automatically and exposes `skill_list`, `skill_read`, and (opt-in)
+`skill_run`.
+
+> 📖 Full reference — discovery roots, `SKILL.md` format, tool parameters, and
+> safety notes: [`docs/SKILLS.md`](docs/SKILLS.md).
+> Run the demo with `node examples/skills-example.mjs`.
 
 
 ---

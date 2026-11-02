@@ -66,7 +66,24 @@ const DEFAULTS = {
   browserLogToFile: true,
   browserLogToConsole: false,
   browserLogFile: '',             // '' -> ~/.qtpi/browser.log
+
+  // RAG / Qdrant
+  qdrantUrl: 'http://localhost:6333', // Qdrant REST endpoint
+  qdrantKey: '',                  // Qdrant API key (empty for local Docker)
+  qdrantCheckCompatibility: false,// skip the client/server version probe on connect
+                                  // (avoids the "Failed to obtain server version"
+                                  //  warning when Qdrant is not running yet)
+
+  // Skills system (skill_list / skill_read / skill_run tools)
+  skillsEnabled: true,            // master switch for the skills system
+  skillsBuiltinDir: 'src/skills', // built-in skills shipped with QTPi
+  skillsDirs: ['~/.qtpi/skills', './.qtpi/skills'], // global + project roots
+  skillsMaxBodyBytes: 40000,      // truncate a skill body to this many bytes
+  skillsAutoActivate: false,      // auto-load a skill when its name is mentioned
+  skillsAllowRun: false,          // enable the skill_run tool (executes scripts)
+  skillsRunTimeout: 30000,        // ms timeout for skill_run scripts
 };
+
 
 let globalConfig = null;
 let projectConfig = null;
@@ -121,7 +138,18 @@ const ENV_MAP = {
   browserLogToFile: 'QTPI_BROWSER_LOG_TO_FILE',
   browserLogToConsole: 'QTPI_BROWSER_LOG_TO_CONSOLE',
   browserLogFile: 'QTPI_BROWSER_LOG_FILE',
+  qdrantUrl: 'QTPI_QDRANT_URL',
+  qdrantKey: 'QTPI_QDRANT_KEY',
+  qdrantCheckCompatibility: 'QTPI_QDRANT_CHECK_COMPATIBILITY',
+  skillsEnabled: 'QTPI_SKILLS_ENABLED',
+  skillsBuiltinDir: 'QTPI_SKILLS_BUILTIN_DIR',
+  skillsDirs: 'QTPI_SKILLS_DIR',
+  skillsMaxBodyBytes: 'QTPI_SKILLS_MAX_BODY',
+  skillsAutoActivate: 'QTPI_SKILLS_AUTO_ACTIVATE',
+  skillsAllowRun: 'QTPI_SKILLS_ALLOW_RUN',
+  skillsRunTimeout: 'QTPI_SKILLS_RUN_TIMEOUT',
 };
+
 
 function makeSureFolderExists(folderPath) {
   if (!fs.existsSync(folderPath)) {

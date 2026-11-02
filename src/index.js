@@ -20,6 +20,10 @@ import { registerBrowserTools } from './tools/browserTool.js';
 import { registerBrowserCommandTools } from './tools/browserCommandTool.js';
 import { createBrowserRuntime } from './tools/browser/browserRuntime.js';
 
+// skills system
+import { createSkillRegistry } from './skills/skillRegistry.js';
+import { registerSkillTools } from './tools/skillTool.js';
+
 // RAG/Qdrant tool
 import { registerRepoSearchTool } from './rag/RepoSearch.js';
 import { createVectorStore } from './rag/VectorStore.js';
@@ -80,6 +84,14 @@ export async function startAgent(options = {}) {
 
   registerBrowserTools(toolRegistry, configWrapper, browserRuntime);
   registerBrowserCommandTools(toolRegistry, configWrapper, browserRuntime);
+
+  // Skills system: discover SKILL.md folders and expose them as tools.
+  // The registry is also handed to the agent so the system prompt can
+  // advertise the Level-1 catalog (name + description only).
+  const skillRegistry = createSkillRegistry(configWrapper, { workingDir });
+  if (skillRegistry.enabled) {
+    registerSkillTools(toolRegistry, configWrapper, skillRegistry);
+  }
   registerRepoSearchTool(toolRegistry, configWrapper, provider);
 
   //  Memory   
@@ -98,6 +110,7 @@ export async function startAgent(options = {}) {
     renderer,
     config: configWrapper,
     workingDir,
+    skills: skillRegistry,
   });
 
   //  Initialize Modes 

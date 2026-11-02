@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "excalidraw": {
+      "source": "softaworks/agent-toolkit",
+      "sourceType": "github",
+      "skillPath": "skills/excalidraw/SKILL.md",
+      "computedHash": "f7d76efd72bebb97e2a398cd7fe2924927fcdab24d586bda2fcc867396b740c0"
+    }
+  }
+}
