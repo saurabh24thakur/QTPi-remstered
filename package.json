@@ -16,7 +16,9 @@
     "test:browser:live": "node examples/browser-tools-example.mjs",
     "test:skills": "node --test test/skills.test.js test/skills-agent.test.js",
     "test:skills:live": "node examples/skills-example.mjs",
-    "test:config": "node --test test/config.test.js"
+    "test:config": "node --test test/config.test.js",
+    "test:channels": "node --test test/channels.test.js",
+    "test:gateway": "node --test test/gateway.test.js"
   },
   "keywords": [
     "ai",

@@ -12,13 +12,24 @@ import {
   showConfig,
   interactiveSetup,
   getAllConfig,
-} from '../src/config/ConfigManager.js';
+} from '../src/config/configManager.js';
 
 import { startAgent } from '../src/index.js';
 
 import { createVectorStore } from '../src/rag/VectorStore.js';
 import { indexRepository } from '../src/rag/Indexer.js';
 import { createProvider } from '../src/providers/ProviderFactory.js';
+
+import { spawn } from 'child_process';
+import { fileURLToPath } from 'url';
+import { resolveEnabledChannels } from '../src/channels/registry.js';
+import {
+  createGateway,
+  resolvePidFile,
+  writePidFile,
+  removePidFile,
+  gatewayStatus,
+} from '../src/gateway/server.js';
 
 const program = new Command();
 
@@ -211,6 +222,125 @@ program
     }
   });
 
+
+
+// ─────────────────────────────────────────────────────────────
+// qtpi gateway start | status | stop
+// A persistent process that serves every configured channel
+// (config: channelsEnabled / QTPI_CHANNELS).
+// ─────────────────────────────────────────────────────────────
+const gateway = program
+  .command('gateway')
+  .description('Run QTPI as a persistent multi-channel gateway');
+
+gateway
+  .command('start')
+  .description('Start the gateway (foreground by default)')
+  .option('--foreground', 'Run in the current process (used internally)')
+  .option('--detach', 'Spawn a detached background process')
+  .action(async (options) => {
+    const configWrapper = { get: (key) => getConfig(key) };
+    const pidFile = resolvePidFile(configWrapper);
+
+    const running = gatewayStatus(pidFile);
+    if (running.running) {
+      console.log(chalk.yellow(`  ⚠ Gateway already running (pid ${running.pid}).`));
+      process.exit(1);
+    }
+
+    // Detach: re-launch ourselves with --foreground, then exit.
+    if (options.detach && !options.foreground) {
+      const binPath = fileURLToPath(import.meta.url);
+      const child = spawn(process.execPath, [binPath, 'gateway', 'start', '--foreground'], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+      console.log(chalk.green(`  ✓ Gateway started in background (pid ${child.pid}).`));
+      console.log(chalk.gray(`  Pidfile: ${pidFile}\n`));
+      process.exit(0);
+    }
+
+    if (!isConfigured()) {
+      console.log(chalk.yellow('  ⚠ QTPI is not configured yet. Run: qtpi config\n'));
+      process.exit(1);
+    }
+
+    const channelNames = resolveEnabledChannels(configWrapper);
+    if (channelNames.length === 0) {
+      console.log(chalk.yellow('  ⚠ No channels enabled.'));
+      console.log(chalk.gray('  Set channelsEnabled in config or QTPI_CHANNELS=webhook.\n'));
+      process.exit(1);
+    }
+
+    console.log(chalk.magenta('\n  🧁 Starting QTPI gateway...\n'));
+
+    let gw;
+    try {
+      gw = createGateway({ workingDir: process.cwd(), configWrapper });
+      await gw.start();
+    } catch (error) {
+      console.log(chalk.red(`  ❌ Gateway failed to start: ${error.message}\n`));
+      process.exit(1);
+    }
+
+    writePidFile(pidFile, process.pid);
+    const { channels, sessions } = gw.status();
+    console.log(chalk.green(`  ✓ Gateway online (pid ${process.pid})`));
+    console.log(chalk.gray(`  Channels: ${channels.join(', ')}`));
+    console.log(chalk.gray(`  Pidfile:  ${pidFile}`));
+    console.log(chalk.gray(`  Sessions: ${sessions.sessions} live\n`));
+    console.log(chalk.gray('  Press Ctrl+C to stop.\n'));
+
+    let shuttingDown = false;
+    const shutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.log(chalk.magenta('\n  🧁 Gateway shutting down...\n'));
+      await gw.stop();
+      removePidFile(pidFile);
+      process.exit(0);
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  });
+
+gateway
+  .command('status')
+  .description('Report whether the gateway is running')
+  .action(() => {
+    const configWrapper = { get: (key) => getConfig(key) };
+    const status = gatewayStatus(resolvePidFile(configWrapper));
+    if (status.running) {
+      console.log(chalk.green(`  ✓ Gateway is running (pid ${status.pid}).`));
+    } else {
+      console.log(chalk.gray('  Gateway is not running.'));
+    }
+    console.log(chalk.gray(`  Pidfile: ${status.pidFile}\n`));
+  });
+
+gateway
+  .command('stop')
+  .description('Stop a running gateway')
+  .action(() => {
+    const configWrapper = { get: (key) => getConfig(key) };
+    const pidFile = resolvePidFile(configWrapper);
+    const status = gatewayStatus(pidFile);
+
+    if (!status.running) {
+      console.log(chalk.gray('  Gateway is not running.'));
+      removePidFile(pidFile);
+      return;
+    }
+
+    try {
+      process.kill(status.pid, 'SIGTERM');
+      removePidFile(pidFile);
+      console.log(chalk.green(`  ✓ Sent stop signal to gateway (pid ${status.pid}).`));
+    } catch (error) {
+      console.log(chalk.red(`  ❌ Could not stop gateway: ${error.message}`));
+    }
+  });
 
 
 program.parse();

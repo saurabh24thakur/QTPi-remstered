@@ -83,9 +83,14 @@ graph TB
     end
 
     subgraph Channels["📡 Channels"]
-        TG["TelegramChannel<br/>Telegraf + custom renderer"]
+        CHREG["channels/registry<br/>name → factory"]
+        CHC["channels/Channel<br/>contract + renderer + bind"]
+        TG["TelegramChannel<br/>Telegraf"]
+        WH["WebhookChannel<br/>built-in http"]
         TGA["TelegramApproval"]
+        CHREG --> TG & WH
         TG --> TGA
+        TG & WH -.implement.-> CHC
     end
 
     subgraph Config["⚙️ Config"]
@@ -347,46 +352,112 @@ built-in `DEFAULTS`** (`configManager.getConfig`).
 
 ```
 bin/qtpi.js
-├── src/index.js ────────────────► startAgent()
-│   ├── config/configManager.js
-│   ├── providers/ProviderFactory.js
-│   ├── tools/ToolRegistry.js
-│   ├── tools/{fileManager,TerminalRunner,GitManager,searchTool}.js
-│   ├── tools/{webSearchTool,webCrawlTool}.js ─► tools/web/webRuntime.js
-│   ├── tools/{browserTool,browserCommandTool}.js ─► tools/browser/{browserRuntime,browserActions}.js
-│   ├── skills/skillRegistry.js + tools/skillTool.js
-│   ├── rag/{RepoSearch,VectorStore,Indexer}.js
-│   ├── memory/LongTermMemory.js
-│   ├── core/Agent.js
-│   │   ├── memory/ConversationHistory.js
-│   │   ├── core/ActionTracker.js
+├── src/index.js ────────────────► startAgent()   (CLI: renderer, modes, REPL, slash cmds)
+│   ├── runtime/createRuntime.js ─► the shared "brain + hands" factory
+│   │   ├── config/configManager.js
+│   │   ├── providers/ProviderFactory.js
 │   │   ├── tools/ToolRegistry.js
-│   │   ├── tools/ApprovalGate.js
-│   │   └── skills/skillContext.js
+│   │   ├── tools/{fileManager,TerminalRunner,GitManager,searchTool}.js
+│   │   ├── tools/{webSearchTool,webCrawlTool}.js ─► tools/web/webRuntime.js
+│   │   ├── tools/{browserTool,browserCommandTool}.js ─► tools/browser/{browserRuntime,browserActions}.js
+│   │   ├── skills/skillRegistry.js + tools/skillTool.js
+│   │   ├── rag/RepoSearch.js
+│   │   ├── memory/LongTermMemory.js
+│   │   └── core/Agent.js
+│   │       ├── memory/ConversationHistory.js
+│   │       ├── core/ActionTracker.js
+│   │       ├── tools/ToolRegistry.js
+│   │       ├── tools/ApprovalGate.js
+│   │       └── skills/skillContext.js
 │   ├── modes/{AgentMode,AskMode,PlanMode}.js ─► core/Planner.js
-│   └── ui/Renderer.js
-├── src/channels/TelegramChannel.js ─► core/Agent.js, TelegramApproval.js
-├── src/rag/{VectorStore,Indexer}.js
+│   ├── ui/Renderer.js
+│   └── rag/{VectorStore,Indexer}.js   (used by the /index slash command)
+├── src/channels/registry.js ─► { telegram, webhook }   (name → factory)
+├── src/channels/Channel.js ─► contract + createChannelRenderer() + bindChannelToRuntime()
+├── src/channels/TelegramChannel.js ─► runtime/createRuntime.js, TelegramApproval.js
+├── src/channels/WebhookChannel.js ─► built-in http (no deps)
+├── src/gateway/server.js ─► createGateway() (runtime + channel router + pidfile)
+├── src/gateway/sessions.js ─► createSessionManager() (per-sender isolation + run lock)
 └── src/providers/ProviderFactory.js
 ```
+
+Both entry points (the CLI and every channel) build their stack through
+`runtime/createRuntime.js`, so they share one identical, fully-featured tool set.
+`createRuntime()` is UI-agnostic: it takes a `renderer` and returns
+`{ provider, toolRegistry, memory, skillRegistry, agent, configWrapper,
+workingDir, webRuntime, browserRuntime }`.
+
+### The channel abstraction
+
+A **channel** is any transport that carries a conversation to and from the
+agent. Every channel implements the same six-member contract
+(`src/channels/Channel.js`):
+
+| member | purpose |
+| --- | --- |
+| `name` | stable channel id (`'telegram'`, `'webhook'`, …) |
+| `start()` / `stop()` | begin / end listening |
+| `send(target, text)` | push a message to a target |
+| `onMessage(handler)` | register the inbound handler |
+| `requestApproval(toolName, args)` | return `'approved'` \| `'rejected'` |
+
+The handler receives `{ senderId, text, reply, sendTyping? }`. `assertChannel()`
+validates the contract; `registry.createChannel(name, options)` builds one by
+name; `resolveEnabledChannels(config)` reads `channelsEnabled`
+(`QTPI_CHANNELS`, comma-separated).
+
+`bindChannelToRuntime(channel, runtime, renderer)` glues a channel to ONE
+shared runtime. `createChannelRenderer()` is a retargetable renderer: it forwards
+agent output to the *current* conversation, so a single runtime can serve many
+channels (the basis for the gateway). `/start` and `/reset` are handled
+here without calling the agent.
+
+Two channels ship today:
+
+- **telegram** — Telegraf, with inline approve/reject buttons (`TelegramApproval.js`).
+- **webhook** — a dependency-free HTTP channel: `POST /message`
+  `{ senderId, text }` → `{ senderId, replies }`. Sensitive tools are rejected
+  unless `autoApprove` is set (no interactive UI).
+
+The CLI itself is not yet a channel object — it remains in `startAgent()` —
+but the gateway runs every enabled channel against one runtime.
+
+### The gateway
+
+The **gateway** (`src/gateway/server.js` + `sessions.js`, CLI: `qtpi gateway
+start|status|stop`) is the daemon that turns the channel abstraction into a
+multi-user service. It builds the runtime **once**, lazy-starts every channel in
+`channelsEnabled`, and routes each inbound message to a **per-`senderId`**
+session.
+
+| Concern | Where | Mechanism |
+| --- | --- | --- |
+| Per-sender isolation | `sessions.js` | one `ConversationHistory` per `senderId` |
+| No concurrent agent use | `sessions.js` | `run()` is serialised behind a promise-chain lock |
+| Bounded memory | `sessions.js` | LRU cap (`gatewayMaxSessions`) + idle TTL (`gatewaySessionTtlMs`) |
+| Renderer/approval routing | `server.js` | the retargetable renderer + a single `approvalHandler` are pointed at the active channel per message |
+| Lifecycle | `bin/qtpi.js` | pidfile (`gatewayPidFile`) write on start, SIGTERM/SIGINT teardown + remove on stop |
+
+`run()` swaps the sender's history into the one agent slot with
+`agent.setConversation()` / `agent.getConversation()`, so `setConversation()`
+also (re)injects the system prompt (memory summary + skill catalog) per turn.
+See [`GATEWAY.md`](GATEWAY.md) for the full contract, config table and e2e notes.
 
 ---
 
 ## ⚠️ Known issues / drift
 
-1. **Case-sensitive import bugs (Windows-only tolerance):**
-   - `bin/qtpi.js` imports `'../src/config/ConfigManager.js'` but the file is
-     `configManager.js`.
-   - `src/channels/TelegramChannel.js` imports `'./SearchTool.js'` but the file is
-     `searchTool.js`.
-   Both break on Linux/macOS.
-2. **`createProvider` ignores its argument.** `ProviderFactory.createProvider()`
-   takes **no parameters** and calls `getConfig()` internally, yet callers pass
-   `configData` / `getAllConfig()`. Harmless but misleading.
-3. **Telegram channel is stale.** `TelegramChannel.js` only wires
-   file/terminal/git/search/rag tools — it does **not** register web, browser, or
-   skill tools, and builds the agent without the `skills` param, so Telegram
-   sessions diverge from the CLI feature set.
+1. ~~**Case-sensitive import bugs (Windows-only tolerance).**~~ **FIXED.** The
+   `bin/qtpi.js` → `ConfigManager.js` and `TelegramChannel.js` → `SearchTool.js`
+   case mismatches are gone; a repo-wide import-case scan now reports zero
+   problems.
+2. ~~**`createProvider` ignores its argument.**~~ **FIXED.** `createProvider()`
+   takes no parameters and reads config internally; `createRuntime()` now calls
+   it with no argument, so the misleading `configData` / `getAllConfig()` passes
+   are gone.
+3. ~~**Telegram channel is stale.**~~ **FIXED.** `TelegramChannel.js` now builds
+   its stack via `runtime/createRuntime.js`, so Telegram gets the same web,
+   browser, skill, RAG and memory tools as the CLI.
 4. **`searchTool.js` `regex.test()` on a `/g` regex** with a manual
    `lastIndex = 0` reset — works, but fragile; `matchAll` per line would be safer.
 5. **`search_repository` gates on `isIndexed()` first**, so it silently no-ops

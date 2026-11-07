@@ -82,6 +82,19 @@ const DEFAULTS = {
   skillsAutoActivate: false,      // auto-load a skill when its name is mentioned
   skillsAllowRun: false,          // enable the skill_run tool (executes scripts)
   skillsRunTimeout: 30000,        // ms timeout for skill_run scripts
+
+  // Channels (pluggable transports: CLI, Telegram, webhook)
+  channelsEnabled: [],            // which channels the gateway starts, e.g. ['telegram']
+  webhookAutoApprove: false,      // webhook channel auto-approves sensitive tools
+  webhookPort: 8787,              // webhook channel listen port
+  webhookHost: '127.0.0.1',       // webhook channel bind host
+  webhookPath: '/message',        // webhook channel route
+
+  // Gateway (persistent multi-channel daemon: `qtpi gateway start`)
+  gatewayEnabled: false,          // master switch for the gateway
+  gatewayPidFile: '',             // '' -> ~/.qtpi/gateway.pid
+  gatewayMaxSessions: 200,        // LRU cap on live per-sender sessions
+  gatewaySessionTtlMs: 0,         // drop sessions idle longer than this (0 = never)
 };
 
 
@@ -148,6 +161,15 @@ const ENV_MAP = {
   skillsAutoActivate: 'QTPI_SKILLS_AUTO_ACTIVATE',
   skillsAllowRun: 'QTPI_SKILLS_ALLOW_RUN',
   skillsRunTimeout: 'QTPI_SKILLS_RUN_TIMEOUT',
+  channelsEnabled: 'QTPI_CHANNELS',
+  webhookAutoApprove: 'QTPI_WEBHOOK_AUTO_APPROVE',
+  webhookPort: 'QTPI_WEBHOOK_PORT',
+  webhookHost: 'QTPI_WEBHOOK_HOST',
+  webhookPath: 'QTPI_WEBHOOK_PATH',
+  gatewayEnabled: 'QTPI_GATEWAY_ENABLED',
+  gatewayPidFile: 'QTPI_GATEWAY_PID_FILE',
+  gatewayMaxSessions: 'QTPI_GATEWAY_MAX_SESSIONS',
+  gatewaySessionTtlMs: 'QTPI_GATEWAY_SESSION_TTL_MS',
 };
 
 

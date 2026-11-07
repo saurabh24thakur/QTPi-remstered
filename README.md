@@ -690,6 +690,68 @@ them automatically and exposes `skill_list`, `skill_read`, and (opt-in)
 > safety notes: [`docs/SKILLS.md`](docs/SKILLS.md).
 > Run the demo with `node examples/skills-example.mjs`.
 
+### 📡 Channels
+
+A **channel** is any transport that carries a conversation to and from the
+agent. Every channel implements the same contract (`src/channels/Channel.js`):
+`name`, `start()`, `stop()`, `send(target, text)`, `onMessage(handler)`, and
+`requestApproval(toolName, args)`. Channels are built by name from a registry
+and bound to **one shared runtime**, so they all get the same tools.
+
+Two channels ship today:
+
+| Channel | Transport | Notes |
+| --- | --- | --- |
+| `telegram` | Telegraf | Inline approve/reject buttons for sensitive tools |
+| `webhook` | Node built-in `http` | `POST /message` `{ senderId, text }` → `{ senderId, replies }` |
+
+```env
+# Which channels the gateway starts (comma-separated)
+QTPI_CHANNELS=telegram,webhook
+
+# Webhook channel: auto-approve sensitive tools (no interactive UI)
+QTPI_WEBHOOK_AUTO_APPROVE=false
+```
+
+> 📖 Contract, registry, and the retargetable renderer that lets one runtime
+> serve many channels: see the *channel abstraction* section of
+> [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+> Run the tests with `npm run test:channels`.
+
+### 🛰️ Gateway
+
+The **gateway** is the persistent daemon that runs every enabled channel at
+once. It builds **one** runtime, then routes each inbound message to a
+**per-sender session** — so two people chatting with the bot never share
+context. Runs are serialised behind a lock, so the single agent slot is never
+driven concurrently.
+
+```bash
+export QTPI_CHANNELS=webhook
+qtpi gateway start --detach     # background daemon
+qtpi gateway status             # running? + pidfile path
+qtpi gateway stop               # SIGTERM + cleanup
+```
+
+```bash
+curl -s http://127.0.0.1:8787/message \
+  -H 'content-type: application/json' \
+  -d '{"senderId":"alice","text":"hello"}'
+# → { "senderId": "alice", "replies": ["…"] }
+```
+
+| Key | Env var | Default | Meaning |
+| --- | --- | --- | --- |
+| `gatewayEnabled` | `QTPI_GATEWAY_ENABLED` | `false` | Master switch |
+| `gatewayPidFile` | `QTPI_GATEWAY_PID_FILE` | `~/.qtpi/gateway.pid` | Pidfile location |
+| `gatewayMaxSessions` | `QTPI_GATEWAY_MAX_SESSIONS` | `200` | LRU cap on live sessions |
+| `gatewaySessionTtlMs` | `QTPI_GATEWAY_SESSION_TTL_MS` | `0` | Drop sessions idle longer than this (`0` = never) |
+
+> 📖 Session isolation, the run lock, pidfile lifecycle, and how to add a
+> channel: [`docs/GATEWAY.md`](docs/GATEWAY.md).
+> Run the demo with `node examples/gateway-example.mjs` (two senders, one agent).
+> Run the tests with `npm run test:gateway`.
+
 
 ---
 

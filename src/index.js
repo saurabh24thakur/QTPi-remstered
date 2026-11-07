@@ -1,39 +1,11 @@
 import chalk from 'chalk';
 import { createInterface } from 'readline/promises';
 
+import { createRuntime } from './runtime/createRuntime.js';
 
-import { getConfig, getAllConfig } from './config/configManager.js';
-import { createProvider } from './providers/ProviderFactory.js';
-
-//tools
-import { createRegistry } from './tools/ToolRegistry.js';
-import { registerFileTools } from './tools/fileManager.js';
-import { registerTerminalTools } from './tools/TerminalRunner.js';
-import { registerGitTools } from './tools/GitManager.js';
-import { registerSearchTools } from './tools/searchTool.js';
-import { registerWebSearchTools } from './tools/webSearchTool.js';
-import { registerWebCrawlTools } from './tools/webCrawlTool.js';
-import { createWebRuntime } from './tools/web/webRuntime.js';
-
-// browser control
-import { registerBrowserTools } from './tools/browserTool.js';
-import { registerBrowserCommandTools } from './tools/browserCommandTool.js';
-import { createBrowserRuntime } from './tools/browser/browserRuntime.js';
-
-// skills system
-import { createSkillRegistry } from './skills/skillRegistry.js';
-import { registerSkillTools } from './tools/skillTool.js';
-
-// RAG/Qdrant tool
-import { registerRepoSearchTool } from './rag/RepoSearch.js';
+// RAG/Qdrant tool (used by the /index slash command)
 import { createVectorStore } from './rag/VectorStore.js';
 import { indexRepository } from './rag/Indexer.js';
-
-//memory
-import { createLongTermMemory } from './memory/LongTermMemory.js';
-
-//core agent
-import { createAgent } from './core/Agent.js';
 
 // modes
 import { createAgentMode } from './modes/AgentMode.js';
@@ -49,69 +21,23 @@ export async function startAgent(options = {}) {
   const workingDir = process.cwd();
   const renderer = createRenderer();
 
-  //  Provider (Brain Connection) 
-  let provider;
+  //  Build the runtime (provider + tools + memory + skills + agent)  .
+  //  createRuntime throws if the provider cannot be created; preserve the
+  //  CLI's existing "render an error and exit" behavior.
+  let runtime;
   try {
-    const configData = getAllConfig();
-    provider = createProvider(configData);
-    console.log(chalk.gray(`  Brain connected: ${provider.name} (${provider.model})`));
+    runtime = createRuntime({
+      workingDir,
+      renderer,
+      options: { memory: options.memory },
+    });
+    console.log(chalk.gray(`  Brain connected: ${runtime.provider.name} (${runtime.provider.model})`));
   } catch (error) {
     renderer.renderError(`Failed to initialize provider: ${error.message}`);
     process.exit(1);
   }
 
-  //  Tool Registry (Hands) 
-  const toolRegistry = createRegistry();
-
-  registerFileTools(toolRegistry, workingDir);
-  registerTerminalTools(toolRegistry, workingDir);
-  registerGitTools(toolRegistry, workingDir);
-  registerSearchTools(toolRegistry, workingDir);
-
-  // Register RAG Qdrant search tool
-  const configWrapper = { get: (key) => getConfig(key) };
-
-  // Shared web services (SSRF policy, result cache, logger, limits).
-  const webRuntime = createWebRuntime(configWrapper);
-
-  registerWebSearchTools(toolRegistry, configWrapper, webRuntime);
-  registerWebCrawlTools(toolRegistry, configWrapper, webRuntime);
-
-  // Shared browser services (one Chromium instance, one page map, one
-  // logger, one SSRF policy). The browser launches lazily on first use,
-  // so users who never touch these tools pay nothing.
-  const browserRuntime = createBrowserRuntime(configWrapper, { logger: webRuntime.logger });
-
-  registerBrowserTools(toolRegistry, configWrapper, browserRuntime);
-  registerBrowserCommandTools(toolRegistry, configWrapper, browserRuntime);
-
-  // Skills system: discover SKILL.md folders and expose them as tools.
-  // The registry is also handed to the agent so the system prompt can
-  // advertise the Level-1 catalog (name + description only).
-  const skillRegistry = createSkillRegistry(configWrapper, { workingDir });
-  if (skillRegistry.enabled) {
-    registerSkillTools(toolRegistry, configWrapper, skillRegistry);
-  }
-  registerRepoSearchTool(toolRegistry, configWrapper, provider);
-
-  //  Memory   
-  const longTermMemory = createLongTermMemory(workingDir);
-
-  // Register memory tools so AI can save/recall facts
-  if (options.memory !== false) {
-    longTermMemory.registerMemoryTools(toolRegistry);
-  }
-
-  //  Build Core Agent Brain 
-  const agent = createAgent({
-    provider,
-    tools: toolRegistry,
-    memory: longTermMemory,
-    renderer,
-    config: configWrapper,
-    workingDir,
-    skills: skillRegistry,
-  });
+  const { provider, toolRegistry, memory, agent, configWrapper } = runtime;
 
   //  Initialize Modes 
   const modes = {
@@ -154,7 +80,7 @@ export async function startAgent(options = {}) {
         setCurrentMode: (mode) => { currentMode = mode; },
         agent,
         renderer,
-        memory: longTermMemory,
+        memory,
         configWrapper,
         workingDir,
         provider,

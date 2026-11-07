@@ -1,81 +1,43 @@
-import { Telegraf, Markup } from 'telegraf';
+import { Telegraf } from 'telegraf';
 import chalk from 'chalk';
-import { createAgent } from '../core/Agent.js';
-import { createProvider } from '../providers/ProviderFactory.js';
-import { createRegistry } from '../tools/ToolRegistry.js';
-import { registerFileTools } from '../tools/fileManager.js';
-import { registerTerminalTools } from '../tools/TerminalRunner.js';
-import { registerGitTools } from '../tools/GitManager.js';
-import { registerSearchTools } from '../tools/SearchTool.js';
-import { registerRepoSearchTool } from '../rag/RepoSearch.js';
-import { createLongTermMemory } from '../memory/LongTermMemory.js';
+import { createRuntime } from '../runtime/createRuntime.js';
+import { getConfig } from '../config/configManager.js';
 import { askTelegramApproval, resetTelegramApproval } from './TelegramApproval.js';
+import { assertChannel, createChannelRenderer, bindChannelToRuntime } from './Channel.js';
 
-export async function startTelegramBot(botToken, configData) {
-  const bot = new Telegraf(botToken);
-  const workingDir = process.cwd();
+// Telegram rejects messages longer than 4096 chars — chunk at 4000.
+const TELEGRAM_MAX_LEN = 4000;
 
-  console.log(chalk.magenta('\n  🤖 Initializing QTPI Telegram Bot...\n'));
 
-  // 1. Provider
-  const provider = createProvider(configData);
+async function sendChunked(ctx, text) {
+  const str = String(text ?? '');
+  if (str.length <= TELEGRAM_MAX_LEN) {
+    await ctx.reply(str);
+    return;
+  }
+  for (let i = 0; i < str.length; i += TELEGRAM_MAX_LEN) {
+    await ctx.reply(str.slice(i, i + TELEGRAM_MAX_LEN));
+  }
+}
 
-  // 2. Tools
-  const tools = createRegistry();
-  registerFileTools(tools, workingDir);
-  registerTerminalTools(tools, workingDir);
-  registerGitTools(tools, workingDir);
-  registerSearchTools(tools, workingDir);
-  registerRepoSearchTool(tools, { get: (k) => configData[k] }, provider);
 
-  // 3. Memory
-  const memory = createLongTermMemory(workingDir);
+// ─────────────────────────────────────────────────────────────
+// createTelegramChannel({ token })
+// Returns a Channel (see Channel.js) backed by Telegraf.
+//
+// The channel owns the transport only — the runtime is built by the
+// caller and bound in with bindChannelToRuntime(), so the same runtime
+// can serve several channels (Phase 2 gateway).
+// ─────────────────────────────────────────────────────────────
+export function createTelegramChannel({ token } = {}) {
+  if (!token) throw new Error('createTelegramChannel requires a bot token');
 
-  // 4. Custom Renderer for Telegram (sends text messages to chat)
+  const bot = new Telegraf(token);
+
+  let messageHandler = null;
   let currentCtx = null;
 
-  const telegramRenderer = {
-    startThinking: () => {
-      if (currentCtx) currentCtx.sendChatAction('typing');
-    },
-    stopThinking: () => {},
-    streamToken: () => {}, // Telegram doesn't support per-token streaming easily
-    renderAssistant: async (text) => {
-      if (currentCtx) {
-        // Chunk long text if > 4000 chars
-        if (text.length > 4000) {
-          for (let i = 0; i < text.length; i += 4000) {
-            await currentCtx.reply(text.slice(i, i + 4000));
-          }
-        } else {
-          await currentCtx.reply(text);
-        }
-      }
-    },
-    renderToolCall: (name) => {
-      if (currentCtx) currentCtx.reply(`🔧 Tool Call: ${name}`);
-    },
-    renderToolResult: () => {},
-    renderWarning: (msg) => {
-      if (currentCtx) currentCtx.reply(`⚠️ ${msg}`);
-    },
-    renderError: (msg) => {
-      if (currentCtx) currentCtx.reply(`❌ Error: ${msg}`);
-    },
-    renderWelcome: () => {},
-  };
-
-  // 5. Create Agent
-  const agent = createAgent({
-    provider,
-    tools,
-    memory,
-    renderer: telegramRenderer,
-    config: { get: (k) => configData[k] },
-    workingDir,
-  });
-
-  // Handle Telegram Inline Button Callbacks
+  // Inline-button callbacks (approve / approve_all / reject).
   bot.action(['approve', 'approve_all', 'reject'], async (ctx) => {
     await ctx.answerCbQuery();
     const choice = ctx.match[0];
@@ -86,37 +48,88 @@ export async function startTelegramBot(botToken, configData) {
     }
   });
 
-  // Listen for text messages
+  // Inbound text → the registered handler.
   bot.on('text', async (ctx) => {
     currentCtx = ctx;
-    const userMsg = ctx.message.text;
+    if (!messageHandler) return;
 
-    if (userMsg === '/start') {
-      resetTelegramApproval();
-      await ctx.reply('🧁 QTPI Telegram Bot is online! Send me any task or question for your codebase.');
-      return;
-    }
-
-    if (userMsg === '/reset') {
-      resetTelegramApproval();
-      agent.conversation.clear();
-      await ctx.reply('✓ Session and approval settings reset.');
-      return;
-    }
-
-    try {
-      await agent.run(userMsg);
-    } catch (err) {
-      await ctx.reply(`❌ Execution Error: ${err.message}`);
-    }
+    const senderId = String(ctx.chat?.id ?? ctx.from?.id ?? 'unknown');
+    await messageHandler({
+      senderId,
+      text: ctx.message.text,
+      reply: (text) => sendChunked(ctx, text),
+      sendTyping: () => ctx.sendChatAction('typing').catch(() => {}),
+    });
   });
 
-  // Launch Bot
-  await bot.launch();
-  console.log(chalk.green('  ✓ Telegram Bot is running!'));
-  console.log(chalk.gray('  Open Telegram on your phone and message your bot.\n'));
+  const channel = {
+    name: 'telegram',
 
-  // Enable graceful stop
-  process.once('SIGINT', () => bot.stop('SIGINT'));
-  process.once('SIGTERM', () => bot.stop('SIGTERM'));
+    async start() {
+      await bot.launch();
+      console.log(chalk.green('  ✓ Telegram Bot is running!'));
+      console.log(chalk.gray('  Open Telegram on your phone and message your bot.\n'));
+    },
+
+    async stop() {
+      bot.stop();
+    },
+
+    async send(target, text) {
+      await bot.telegram.sendMessage(target, String(text));
+    },
+
+    onMessage(handler) {
+      messageHandler = handler;
+    },
+
+    async requestApproval(toolName, args) {
+      if (!currentCtx) return 'rejected';
+      return askTelegramApproval(currentCtx, toolName, args);
+    },
+
+    resetApproval() {
+      resetTelegramApproval();
+    },
+  };
+
+  return assertChannel(channel);
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// startTelegramBot(botToken, configData)
+// Backward-compatible entry point used by bin/qtpi.js. Builds the
+// shared runtime, binds the Telegram channel to it, and launches.
+// ──────���──────────────────────────────────────────────────────
+export async function startTelegramBot(botToken, configData) {
+  const workingDir = process.cwd();
+  console.log(chalk.magenta('\n  🤖 Initializing QTPI Telegram Bot...\n'));
+
+  // Use getConfig (env → project → global → default) rather than the raw
+  // configData object, which omits env vars and built-in defaults.
+  const configWrapper = { get: (key) => getConfig(key) };
+
+  const renderer = createChannelRenderer();
+  const channel = createTelegramChannel({ token: botToken });
+
+  // Build the SAME runtime the CLI uses (provider + all tools + memory +
+  // skills + agent). This is what fixes the old drift where Telegram was
+  // missing the web, browser and skill tools.
+  const runtime = createRuntime({
+    workingDir,
+    configWrapper,
+    renderer,
+    options: {
+      approvalHandler: (toolName, args) => channel.requestApproval(toolName, args),
+    },
+  });
+
+  bindChannelToRuntime(channel, runtime, renderer);
+
+  await channel.start();
+
+  // Enable graceful stop.
+  process.once('SIGINT', () => channel.stop());
+  process.once('SIGTERM', () => channel.stop());
 }

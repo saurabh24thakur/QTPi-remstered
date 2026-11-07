@@ -6,10 +6,12 @@ import { needsApproval, askUserApproval } from '../tools/ApprovalGate.js';
 import { formatSkillCatalog } from '../skills/skillContext.js';
 
 
-export function createAgent({ provider, tools, memory, renderer, config, workingDir, skills }) {
+export function createAgent({ provider, tools, memory, renderer, config, workingDir, skills, approvalHandler }) {
 
 
-  const conversation = createConversation(50);
+  // `let` (not `const`) so the gateway can swap in a per-sender
+  // conversation via setConversation() — one agent, many isolated chats.
+  let conversation = createConversation(50);
 
   // Action tracker (logs to .qtpi/actions.log)
   const tracker = createActionTracker(workingDir);
@@ -19,16 +21,22 @@ export function createAgent({ provider, tools, memory, renderer, config, working
 
   initializeSystemPrompt();
 
+  // Rebuild the system prompt and (re)install it into the current
+  // conversation. Called on init and whenever the conversation is swapped.
+  function initializeSystemPrompt() {
+    conversation.addSystemMessage(buildSystemPrompt());
+  }
+
 
  
-  function initializeSystemPrompt() {
+  function buildSystemPrompt() {
     const pastMemories = memory ? memory.recall() : '';
 
     // Level-1 skill catalog (name + description only) — keeps the base
     // prompt small while telling the model which skills it can load.
     const skillCatalog = skills && skills.enabled ? formatSkillCatalog(skills) : '';
 
-    const systemPrompt = `You are QTPI (pronounced "cutie pie"), an expert AI coding agent that lives in the user's terminal. You write clean, precise, and production-ready code.
+    return `You are QTPI (pronounced "cutie pie"), an expert AI coding agent that lives in the user's terminal. You write clean, precise, and production-ready code.
 
 ## Your Capabilities
 You can read/write files, edit code, run shell commands, perform git actions, search code, and query repository embeddings.
@@ -44,8 +52,6 @@ You can also search the public web (web_search) and fetch/crawl web pages (web_c
 - Working Directory: ${workingDir}
 
 ${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Memory: First session on this project.'}${skillCatalog ? `\n\n${skillCatalog}` : ''}`;
-
-    conversation.addSystemMessage(systemPrompt);
   }
 
 
@@ -112,11 +118,11 @@ ${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Me
 
           // ═══ APPROVAL GATE CHECK ═══
           if (needsApproval(toolCall.name)) {
-            const approval = await askUserApproval(
-              toolCall.name,
-              toolCall.arguments,
-              workingDir
-            );
+            // A channel (Telegram, webhook, …) can supply its own approval
+            // handler; otherwise fall back to the interactive terminal gate.
+            const approval = approvalHandler
+              ? await approvalHandler(toolCall.name, toolCall.arguments)
+              : await askUserApproval(toolCall.name, toolCall.arguments, workingDir);
 
             if (approval === 'rejected') {
               toolResult = '❌ Action rejected by user. Do not try this action again. Find another approach or ask the user.';
@@ -187,9 +193,26 @@ ${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Me
   }
 
 
+  // ── Conversation swapping (gateway session isolation) ──
+  // The gateway keeps one agent but swaps in a per-sender conversation
+  // so two chats never share context. Swapping re-installs the system
+  // prompt (with memory + skill catalog) into the new conversation.
+  function getConversation() {
+    return conversation;
+  }
+
+  function setConversation(next) {
+    conversation = next;
+    initializeSystemPrompt();
+    return conversation;
+  }
+
+
   return {
     run,
-    conversation,
+    get conversation() { return conversation; },
+    getConversation,
+    setConversation,
     tracker,
     getActionSummary,
     endSession,
