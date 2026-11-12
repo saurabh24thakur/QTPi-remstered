@@ -4,7 +4,7 @@ export function createOllamaProvider(model) {
   const baseUrl = 'http://localhost:11434';
 
 
-  async function chat(messages, tools = [], onStream = null) {
+  async function chat(messages, tools = [], onStream = null, options = {}) {
 
     const request = {
       model: model,
@@ -31,8 +31,10 @@ export function createOllamaProvider(model) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
+        signal: options.signal,
       });
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       // This error means Ollama isn't running at all
       throw new Error(
         'Could not connect to Ollama.\n' +

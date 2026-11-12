@@ -753,6 +753,69 @@ curl -s http://127.0.0.1:8787/message \
 > Run the tests with `npm run test:gateway`.
 
 
+### 🖥️ Dashboard (Control UI)
+
+The **dashboard** is a local, dependency-free control UI served over Node's
+built-in `http` — no framework, no build step. It is a *view* onto the same
+gateway: a message typed into the dashboard is routed through the gateway
+router, so it is handled **exactly** like a Telegram or webhook message (same
+runtime, same per-sender session, same approval gate).
+
+```bash
+qtpi dashboard                 # start + open http://127.0.0.1:8788
+qtpi dashboard --port 9000     # custom port
+qtpi dashboard --no-open       # do not launch a browser
+qtpi dashboard --auto-approve  # allow sensitive tools from the dashboard
+```
+
+It binds **loopback only** (`127.0.0.1`), masks secrets in `/api/config`, and
+rejects sensitive tools unless `controlUiAutoApprove=true`. Enable it on the
+gateway itself with `QTPI_CONTROL_UI_ENABLED=true`.
+
+| Key | Env var | Default | Meaning |
+| --- | --- | --- | --- |
+| `controlUiEnabled` | `QTPI_CONTROL_UI_ENABLED` | `false` | Serve the dashboard from the gateway |
+| `controlUiPort` | `QTPI_CONTROL_UI_PORT` | `8788` | Dashboard listen port |
+| `controlUiHost` | `QTPI_CONTROL_UI_HOST` | `127.0.0.1` | Dashboard bind host (loopback only by default) |
+| `controlUiAutoApprove` | `QTPI_CONTROL_UI_AUTO_APPROVE` | `false` | Dashboard auto-approves sensitive tools |
+
+> 📖 HTTP surface, security posture, and the `createControlUi()` API:
+> [`docs/GATEWAY.md`](docs/GATEWAY.md) (Control UI section).
+
+### ⏱️ Scheduled automation
+
+Configure cron jobs in `automationJobs` or a JSON file and run them from the
+gateway, or trigger one directly from the CLI:
+
+```bash
+qtpi jobs list
+qtpi jobs validate
+qtpi jobs run nightly-review
+```
+
+The gateway starts scheduled jobs when `automationEnabled` is true. Optional
+`channel` and `target` fields deliver completed output through a running
+channel. By default, scheduled jobs reject sensitive tools. See
+the Automation section in [`docs/GATEWAY.md`](docs/GATEWAY.md) for job fields and
+settings.
+
+### 🧩 Plugins and named runtimes
+
+Trusted local plugins can register tools, providers, and channels. Gateway
+traffic can also be routed to named runtimes with separate workspaces and
+sessions. See [`docs/PLUGINS.md`](docs/PLUGINS.md).
+
+### 🔒 Security controls
+
+Ask mode filters tool access by capability, tool output is redacted before it
+enters the model conversation, and optional Linux bubblewrap sandboxing is
+available for shell commands. See [`docs/SECURITY.md`](docs/SECURITY.md) for
+limits and configuration.
+
+For a feature-by-feature summary against the last committed version, see
+[`docs/CHANGELOG.md`](docs/CHANGELOG.md).
+
+
 ---
 
 # 📂 Project Structure
@@ -826,6 +889,7 @@ QTPi
 
 - CLI
 - Telegram Bot API
+- Local web dashboard (`qtpi dashboard`)
 
 
 ---
@@ -843,7 +907,7 @@ Future improvements:
 - [ ] Git integration
 - [ ] Automated testing agent
 - [ ] Plugin system
-- [ ] Web dashboard
+- [x] Web dashboard (`qtpi dashboard`)
 - [ ] Local LLM support
 
 

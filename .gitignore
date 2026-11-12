@@ -1,11 +1,26 @@
 node_modules/
 .qtpi/
 *.log
+*.tmp
+*.temp
 .DS_Store
 
 resume.txt
 tmp_*
+dummy/
+dummy_*
+*_dummy.*
+placeholder/
+placeholder_*
+*_placeholder.*
 
 plan.md
 
 
+/test/automation.test.js
+/test/control-ui.test.js
+/test/plugins.test.js
+/test/security.test.js
+/docs/AUTOMATION.md
+
+browser-tools.test.js

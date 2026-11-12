@@ -10,6 +10,7 @@
 
 import { createTelegramChannel } from './TelegramChannel.js';
 import { createWebhookChannel } from './WebhookChannel.js';
+import { assertChannel } from './Channel.js';
 
 const FACTORIES = {
   telegram: createTelegramChannel,
@@ -33,12 +34,12 @@ export function getChannelFactory(name) {
 
 
 // Build a channel by name. Throws on an unknown name.
-export function createChannel(name, options = {}) {
-  const factory = FACTORIES[name];
+export function createChannel(name, options = {}, extensions = new Map()) {
+  const factory = extensions.get(name) || FACTORIES[name];
   if (!factory) {
     throw new Error(`Unknown channel "${name}". Available channels: ${listChannels().join(', ')}`);
   }
-  return factory(options);
+  return assertChannel(factory(options));
 }
 
 

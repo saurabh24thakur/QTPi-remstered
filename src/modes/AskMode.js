@@ -12,7 +12,7 @@ export function createAskMode(agent) {
       `Provide answers and explanations only.\n\n` +
       `User Question: ${input}`;
 
-    await agent.run(safeInput);
+    await agent.run(safeInput, { capabilities: ['read'] });
   }
 
   return {

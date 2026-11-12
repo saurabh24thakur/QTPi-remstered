@@ -16,9 +16,10 @@
 
 import { getConfig } from '../config/configManager.js';
 import { createProvider } from '../providers/ProviderFactory.js';
+import { loadPlugins } from '../plugins/pluginLoader.js';
 
 // tools
-import { createRegistry } from '../tools/ToolRegistry.js';
+import { addToolSecrets, createRegistry } from '../tools/ToolRegistry.js';
 import { registerFileTools } from '../tools/fileManager.js';
 import { registerTerminalTools } from '../tools/TerminalRunner.js';
 import { registerGitTools } from '../tools/GitManager.js';
@@ -73,13 +74,15 @@ export function createRuntime({ workingDir, configWrapper, renderer, options = {
   // ── Provider (Brain Connection) ──────────────────────────────
   // A caller may inject a provider (used by tests and the gateway);
   // otherwise build one from the merged config.
-  const provider = options.provider || createProvider();
+  const toolRegistry = options.toolRegistry || createRegistry();
+  addToolSecrets(toolRegistry, ['apiKey', 'searchApiKey', 'qdrantKey', 'telegramToken']
+    .map((key) => config.get(key)));
+  const plugins = options.plugins || { providers: new Map(), channels: new Map(), loaded: [] };
+  const provider = options.provider || createProvider(config, plugins.providers);
 
   // ── Tool Registry (Hands) ────────────────────────────────────
-  const toolRegistry = createRegistry();
-
   registerFileTools(toolRegistry, dir);
-  registerTerminalTools(toolRegistry, dir);
+  registerTerminalTools(toolRegistry, dir, config);
   registerGitTools(toolRegistry, dir);
   registerSearchTools(toolRegistry, dir);
 
@@ -134,5 +137,19 @@ export function createRuntime({ workingDir, configWrapper, renderer, options = {
     workingDir: dir,
     webRuntime,
     browserRuntime,
+    plugins,
+    renderer,
   };
+}
+
+/** Create a runtime after loading configured local plugins. */
+export async function createRuntimeWithPlugins(args = {}) {
+  const dir = args.workingDir || process.cwd();
+  const config = args.configWrapper || { get: (key) => getConfig(key) };
+  const toolRegistry = createRegistry();
+  const plugins = await loadPlugins({ toolRegistry, config, workingDir: dir });
+  return createRuntime({
+    ...args,
+    options: { ...(args.options || {}), toolRegistry, plugins },
+  });
 }

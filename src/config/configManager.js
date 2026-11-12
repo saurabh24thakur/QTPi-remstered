@@ -95,6 +95,28 @@ const DEFAULTS = {
   gatewayPidFile: '',             // '' -> ~/.qtpi/gateway.pid
   gatewayMaxSessions: 200,        // LRU cap on live per-sender sessions
   gatewaySessionTtlMs: 0,         // drop sessions idle longer than this (0 = never)
+
+  // Control UI (local dashboard: `qtpi dashboard`)
+  controlUiEnabled: false,        // serve the dashboard from the gateway
+  controlUiPort: 8788,            // dashboard listen port
+  controlUiHost: '127.0.0.1',     // dashboard bind host (loopback only by default)
+  controlUiAutoApprove: false,    // dashboard auto-approves sensitive tools
+
+  // Automation (scheduled jobs: `qtpi jobs`, cron → the shared runtime)
+  automationEnabled: false,       // master switch for the scheduler
+  automationJobs: [],             // inline job list: [{ id, name, schedule, prompt, ... }]
+  automationJobsFile: '',         // '' -> only automationJobs; else a JSON file of jobs
+  automationAutoApprove: false,   // auto-approve sensitive tools in scheduled runs
+  automationTimezone: '',         // '' -> system local timezone for cron
+  automationRunTimeoutMs: 300000, // hard wall-clock cap on a single job run (5 min)
+  automationLogEnabled: false,    // append each run to automationLogFile
+  automationLogFile: '',          // '' -> ~/.qtpi/automation.log
+
+  // Local plugin entry points (trusted executable JavaScript modules).
+  pluginsDirs: ['~/.qtpi/plugins', './.qtpi/plugins'],
+  // Optional named gateway runtimes: [{ name, workspace, channels, senders }].
+  agents: [],
+  sandboxEnabled: false,          // sandbox shell/browser execution where supported
 };
 
 
@@ -170,6 +192,21 @@ const ENV_MAP = {
   gatewayPidFile: 'QTPI_GATEWAY_PID_FILE',
   gatewayMaxSessions: 'QTPI_GATEWAY_MAX_SESSIONS',
   gatewaySessionTtlMs: 'QTPI_GATEWAY_SESSION_TTL_MS',
+  controlUiEnabled: 'QTPI_CONTROL_UI_ENABLED',
+  controlUiPort: 'QTPI_CONTROL_UI_PORT',
+  controlUiHost: 'QTPI_CONTROL_UI_HOST',
+  controlUiAutoApprove: 'QTPI_CONTROL_UI_AUTO_APPROVE',
+  automationEnabled: 'QTPI_AUTOMATION_ENABLED',
+  automationJobs: 'QTPI_AUTOMATION_JOBS',
+  automationJobsFile: 'QTPI_AUTOMATION_JOBS_FILE',
+  automationAutoApprove: 'QTPI_AUTOMATION_AUTO_APPROVE',
+  automationTimezone: 'QTPI_AUTOMATION_TIMEZONE',
+  automationRunTimeoutMs: 'QTPI_AUTOMATION_RUN_TIMEOUT_MS',
+  automationLogEnabled: 'QTPI_AUTOMATION_LOG_ENABLED',
+  automationLogFile: 'QTPI_AUTOMATION_LOG_FILE',
+  pluginsDirs: 'QTPI_PLUGINS_DIR',
+  agents: 'QTPI_AGENTS',
+  sandboxEnabled: 'QTPI_SANDBOX_ENABLED',
 };
 
 
@@ -281,6 +318,31 @@ export function isConfigured() {
 }
 
 
+// ─────────────────────────────────────────────────────────────
+// SECRET_KEYS + maskSecret()
+// Keys whose values must never be shown in full (CLI `qtpi config
+// --show`, the control UI, logs). maskSecret() keeps a short prefix
+// and suffix so a user can still recognise which key is set.
+// ─────────────────────────────────────────────────────────────
+export const SECRET_KEYS = ['apiKey', 'searchApiKey', 'qdrantKey', 'telegramToken'];
+
+export function maskSecret(value) {
+  if (value === undefined || value === null || value === '') return value;
+  const secret = String(value);
+  if (secret.length <= 12) return '••••';
+  return secret.slice(0, 8) + '...' + secret.slice(-4);
+}
+
+// Return a shallow copy of a config object with secret values masked.
+export function maskConfig(config) {
+  const out = {};
+  for (const [key, value] of Object.entries(config || {})) {
+    out[key] = SECRET_KEYS.includes(key) ? maskSecret(value) : value;
+  }
+  return out;
+}
+
+
 export function showConfig() {
   const config = getAllConfig();
 
@@ -295,14 +357,8 @@ export function showConfig() {
 
   // Show each key-value pair
   for (const [key, value] of Object.entries(config)) {
-    let displayValue = value;
-
-    // Hide most of the secret keys
-    // Show only first 8 chars and last 4 chars
-    const SECRET_KEYS = ['apiKey', 'searchApiKey', 'qdrantKey'];
-    if (SECRET_KEYS.includes(key) && typeof value === 'string' && value.length > 12) {
-      displayValue = value.slice(0, 8) + '...' + value.slice(-4);
-    }
+    // Hide most of the secret keys (shared with the control UI).
+    const displayValue = SECRET_KEYS.includes(key) ? maskSecret(value) : value;
 
     console.log(chalk.white(`  ${key}: `) + chalk.cyan(displayValue));
   }

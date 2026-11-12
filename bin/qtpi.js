@@ -16,11 +16,15 @@ import {
 
 import { startAgent } from '../src/index.js';
 
+import { createRuntimeWithPlugins } from '../src/runtime/createRuntime.js';
+import { createAutomation } from '../src/automation/createAutomation.js';
+import { createCollectingRenderer } from '../src/automation/scheduler.js';
+import { resolveJobs } from '../src/automation/jobStore.js';
 import { createVectorStore } from '../src/rag/VectorStore.js';
 import { indexRepository } from '../src/rag/Indexer.js';
 import { createProvider } from '../src/providers/ProviderFactory.js';
 
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
 import { fileURLToPath } from 'url';
 import { resolveEnabledChannels } from '../src/channels/registry.js';
 import {
@@ -277,7 +281,7 @@ gateway
 
     let gw;
     try {
-      gw = createGateway({ workingDir: process.cwd(), configWrapper });
+      gw = await createGateway({ workingDir: process.cwd(), configWrapper });
       await gw.start();
     } catch (error) {
       console.log(chalk.red(`  ❌ Gateway failed to start: ${error.message}\n`));
@@ -285,11 +289,16 @@ gateway
     }
 
     writePidFile(pidFile, process.pid);
-    const { channels, sessions } = gw.status();
+    const { channels, sessions, controlUi } = gw.status();
     console.log(chalk.green(`  ✓ Gateway online (pid ${process.pid})`));
     console.log(chalk.gray(`  Channels: ${channels.join(', ')}`));
     console.log(chalk.gray(`  Pidfile:  ${pidFile}`));
-    console.log(chalk.gray(`  Sessions: ${sessions.sessions} live\n`));
+    console.log(chalk.gray(`  Sessions: ${sessions.sessions} live`));
+    if (controlUi && controlUi.address) {
+      const { address, port } = controlUi.address;
+      console.log(chalk.gray(`  Control:  http://${address}:${port}`));
+    }
+    console.log('');
     console.log(chalk.gray('  Press Ctrl+C to stop.\n'));
 
     let shuttingDown = false;
@@ -342,5 +351,202 @@ gateway
     }
   });
 
+
+// ─────────────────────────────────────────────────────────────
+// qtpi dashboard
+// Start the gateway with the local control UI enabled and open it
+// in the default browser. The dashboard talks to the SAME runtime
+// as every channel (see src/gateway/controlUi.js).
+// ─────────────────────────────────────────────────────────────
+program
+  .command('dashboard')
+  .description('Open the local QTPi control dashboard')
+  .option('--port <port>', 'Dashboard port (default 8788)')
+  .option('--host <host>', 'Bind host (default 127.0.0.1)')
+  .option('--no-open', 'Do not open the browser automatically')
+  .option('--auto-approve', 'Auto-approve sensitive tools from the dashboard')
+  .action(async (options) => {
+    if (!isConfigured()) {
+      console.log(chalk.yellow('  ⚠ QTPI is not configured yet. Run: qtpi config\n'));
+      process.exit(1);
+    }
+
+    const configWrapper = { get: (key) => getConfig(key) };
+    const port = options.port ? Number(options.port) : getConfig('controlUiPort') || 8788;
+    const host = options.host || getConfig('controlUiHost') || '127.0.0.1';
+
+    console.log(chalk.magenta('\n  🧁 Starting QTPi control dashboard...\n'));
+
+    let gw;
+    try {
+      gw = await createGateway({
+        workingDir: process.cwd(),
+        configWrapper,
+        options: {
+          controlUi: true,
+          controlUiPort: port,
+          controlUiHost: host,
+          controlUiAutoApprove: options.autoApprove,
+        },
+      });
+      await gw.start();
+    } catch (error) {
+      console.log(chalk.red(`  ❌ Dashboard failed to start: ${error.message}\n`));
+      process.exit(1);
+    }
+
+    const ui = gw.controlUi;
+    const addr = ui && ui.address();
+    const url = `http://${host}:${addr ? addr.port : port}`;
+    console.log(chalk.green(`  ✓ Dashboard online at ${url}`));
+    console.log(chalk.gray('  Press Ctrl+C to stop.\n'));
+
+    if (options.open !== false) {
+      const opener = process.platform === 'win32'
+        ? ['cmd', ['/c', 'start', '', url]]
+        : process.platform === 'darwin'
+          ? ['open', [url]]
+          : ['xdg-open', [url]];
+      execFile(opener[0], opener[1], () => { /* best-effort */ });
+    }
+
+    let shuttingDown = false;
+    const shutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.log(chalk.magenta('\n  🧁 Dashboard shutting down...\n'));
+      await gw.stop();
+      process.exit(0);
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  });
+
+
+
+// ─────────────────────────────────────────────────────────────
+// qtpi jobs list | validate | run <id>
+// Phase 4 automation: cron-scheduled agent runs.
+// The gateway runs the same scheduler in the background; these
+// subcommands let you inspect and trigger jobs from a terminal.
+// ─────────────────────────────────────────────────────────────
+const jobsCmd = program
+  .command('jobs')
+  .description('List, validate and run scheduled automation jobs');
+
+jobsCmd
+  .command('list')
+  .description('Show configured jobs')
+  .option('--json', 'Emit JSON instead of a table')
+  .action((options) => {
+    const configWrapper = { get: (key) => getConfig(key) };
+    const enabled = String(getConfig('automationEnabled')).toLowerCase() === 'true';
+    const { jobs, warnings } = resolveJobs(configWrapper);
+
+    if (options.json) {
+      console.log(JSON.stringify({ enabled, jobs, warnings }, null, 2));
+      return;
+    }
+
+    console.log(chalk.magenta(`\n  🧁 Automation: ${enabled ? chalk.green('enabled') : chalk.gray('disabled')}\n`));
+
+    if (warnings.length) {
+      for (const warning of warnings) console.log(chalk.yellow(`  ⚠ ${warning}`));
+      console.log('');
+    }
+
+    if (jobs.length === 0) {
+      console.log(chalk.gray('  No jobs configured.'));
+      console.log(chalk.gray('  Add jobs to the automationJobs config key or a automationJobsFile JSON file.\n'));
+      return;
+    }
+
+    const idWidth = Math.max(2, ...jobs.map((j) => j.id.length));
+    console.log(chalk.gray(`  ${'ID'.padEnd(idWidth)}  ${'SCHEDULE'.padEnd(16)}  ${'STATE'.padEnd(8)}  NAME`));
+    for (const job of jobs) {
+      const state = job.enabled ? chalk.green('on') : chalk.gray('off');
+      console.log(`  ${job.id.padEnd(idWidth)}  ${job.schedule.padEnd(16)}  ${state.padEnd(8)}  ${chalk.gray(job.name)}`);
+    }
+    console.log('');
+  });
+
+jobsCmd
+  .command('validate')
+  .description('Check job definitions without running them')
+  .action(() => {
+    const configWrapper = { get: (key) => getConfig(key) };
+    const { jobs, warnings } = resolveJobs(configWrapper);
+
+    console.log(chalk.magenta(`\n  🧁 Validating ${jobs.length} job(s)...\n`));
+    for (const warning of warnings) console.log(chalk.red(`  ✗ ${warning}`));
+    if (jobs.length === 0 && warnings.length === 0) {
+      console.log(chalk.gray('  No jobs configured.\n'));
+      return;
+    }
+    if (warnings.length === 0) {
+      console.log(chalk.green(`  ✓ All ${jobs.length} job(s) are valid.\n`));
+    } else {
+      console.log(chalk.gray(`\n  ${jobs.length} valid, ${warnings.length} problem(s).\n`));
+    }
+  });
+
+jobsCmd
+  .command('run <id>')
+  .description('Run a job immediately through a headless runtime')
+  .option('--verbose', 'Print tool activity to stderr')
+  .action(async (id, options) => {
+    if (!isConfigured()) {
+      console.log(chalk.yellow('  ⚠ QTPI is not configured yet. Run: qtpi config\n'));
+      process.exit(1);
+    }
+
+    const configWrapper = { get: (key) => getConfig(key) };
+    const { jobs } = resolveJobs(configWrapper);
+    const job = jobs.find((entry) => entry.id === id);
+
+    if (!job) {
+      console.log(chalk.red(`  ❌ Unknown job "${id}".`));
+      const known = jobs.map((entry) => entry.id).join(', ') || 'none';
+      console.log(chalk.gray(`  Known jobs: ${known}\n`));
+      process.exit(1);
+    }
+
+    const renderer = createCollectingRenderer();
+    let runtime;
+    try {
+      runtime = await createRuntimeWithPlugins({
+        workingDir: process.cwd(),
+        configWrapper,
+        renderer,
+        options: { memory: false },
+      });
+    } catch (error) {
+      console.log(chalk.red(`\n  ❌ Failed to initialize provider: ${error.message}\n`));
+      process.exit(1);
+    }
+
+    // enabled: false — we drive runNow() directly, no cron tasks.
+    const automation = createAutomation({
+      runtime,
+      config: configWrapper,
+      options: { enabled: false, jobs, autoApprove: job.autoApprove === null ? undefined : job.autoApprove },
+    });
+
+    console.log(chalk.magenta(`\n  🧁 Running job "${job.id}" (${job.schedule})...\n`));
+
+    const result = await automation.scheduler.runNow(job.id);
+
+    const output = renderer.getOutput();
+    if (output) console.log(output);
+
+    if (result.ok) {
+      console.log(chalk.green(`\n  ✓ Job "${job.id}" finished in ${result.durationMs}ms\n`));
+    } else {
+      console.log(chalk.red(`\n  ❌ Job "${job.id}" failed: ${result.error}\n`));
+      process.exitCode = 1;
+    }
+
+    try { await runtime.agent.endSession(); } catch { /* best-effort */ }
+  });
 
 program.parse();

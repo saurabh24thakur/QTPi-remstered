@@ -22,10 +22,31 @@ import os from 'os';
 import path from 'path';
 
 import { getConfig, getConfigNumber, getConfigBool } from '../config/configManager.js';
-import { createRuntime } from '../runtime/createRuntime.js';
+import { createRuntimeWithPlugins } from '../runtime/createRuntime.js';
 import { createChannelRenderer } from '../channels/Channel.js';
 import { createChannel, resolveEnabledChannels } from '../channels/registry.js';
 import { createSessionManager } from './sessions.js';
+import { createControlUi } from './controlUi.js';
+import { createAutomation } from '../automation/createAutomation.js';
+import { createCollectingRenderer } from '../automation/scheduler.js';
+import { acquireAgentLock } from '../core/AgentLock.js';
+
+function normalizeStrings(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value === 'string') return value.split(',').map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
+function parseAgents(raw) {
+  if (Array.isArray(raw)) return raw.filter((item) => item && typeof item === 'object' && !Array.isArray(item));
+  if (typeof raw !== 'string' || !raw.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((item) => item && typeof item === 'object' && !Array.isArray(item)) : [];
+  } catch {
+    throw new TypeError('The agents config must be a JSON array of agent definitions');
+  }
+}
 
 
 // ─────────────────────────────────────────────────────────────
@@ -43,7 +64,7 @@ import { createSessionManager } from './sessions.js';
 // Returns:
 //   { runtime, sessions, channels, start, stop, status, bindChannel }
 // ─────────────────────────────────────────────────────────────
-export function createGateway({ workingDir, configWrapper, renderer, options = {} } = {}) {
+export async function createGateway({ workingDir, configWrapper, renderer, options = {} } = {}) {
   const dir = workingDir || process.cwd();
   const config = configWrapper || { get: (key) => getConfig(key) };
   const channelRenderer = renderer || createChannelRenderer();
@@ -69,28 +90,110 @@ export function createGateway({ workingDir, configWrapper, renderer, options = {
     return Boolean(value);
   };
 
-  const runtime = createRuntime({
+  const runtimeOptions = {
+    provider: options.provider,
+    memory: options.memory,
+  };
+  const runtimeArgs = {
     workingDir: dir,
     configWrapper: config,
     renderer: channelRenderer,
     options: {
-      provider: options.provider,
-      memory: options.memory,
+      ...runtimeOptions,
       approvalHandler: options.approvalHandler
         || ((toolName, args) => (activeChannel
           ? activeChannel.requestApproval(toolName, args)
           : Promise.resolve('rejected'))),
     },
-  });
+  };
 
-  const sessions = createSessionManager({
-    agent: runtime.agent,
-    maxSessions: options.maxSessions ?? num('gatewayMaxSessions'),
-    idleTtlMs: options.idleTtlMs ?? num('gatewaySessionTtlMs'),
-  });
+  const configuredAgents = parseAgents(config.get('agents'));
+  const runtimeEntries = new Map();
+  if (configuredAgents.length === 0) {
+    runtimeEntries.set('default', {
+      definition: { name: 'default', workspace: dir, channels: [], senders: [] },
+      runtime: await createRuntimeWithPlugins(runtimeArgs),
+    });
+  } else {
+    for (const definition of configuredAgents) {
+      const name = String(definition.name || `agent-${runtimeEntries.size + 1}`);
+      const workspace = path.resolve(dir, definition.workspace || '.');
+      const scopedConfig = {
+        get(key) {
+          if (Object.prototype.hasOwnProperty.call(definition, key)) return definition[key];
+          return config.get(key);
+        },
+      };
+      const runtime = await createRuntimeWithPlugins({
+        ...runtimeArgs,
+        workingDir: workspace,
+        configWrapper: scopedConfig,
+      });
+      runtimeEntries.set(name, {
+        definition: {
+          ...definition,
+          name,
+          workspace,
+          channels: normalizeStrings(definition.channels),
+          senders: normalizeStrings(definition.senders),
+        },
+        runtime,
+      });
+    }
+  }
+  const primary = runtimeEntries.values().next().value;
+  const runtime = primary.runtime;
 
+  for (const entry of runtimeEntries.values()) {
+    entry.sessions = createSessionManager({
+      agent: entry.runtime.agent,
+      maxSessions: options.maxSessions ?? num('gatewayMaxSessions'),
+      idleTtlMs: options.idleTtlMs ?? num('gatewaySessionTtlMs'),
+    });
+  }
+  const sessions = primary.sessions;
+  let routeLock = Promise.resolve();
   const channels = new Map();
+
+  // Automation uses the same agent behind the shared execution lock,
+  // while swapping in a collecting renderer for configured delivery.
+  const automationRenderer = createCollectingRenderer();
+  const automation = createAutomation({
+    runtime,
+    config,
+    options: {
+      enabled: options.automation,
+      jobs: options.jobs,
+      timeoutMs: options.automationTimeoutMs,
+      autoApprove: options.automationAutoApprove,
+      renderer: automationRenderer,
+      deliver: async (job, output) => {
+        if (!job.channel && !job.target) return;
+        if (!job.channel || !job.target) {
+          throw new Error(`Job "${job.id}" needs both channel and target to deliver output`);
+        }
+        const channel = channels.get(job.channel);
+        if (!channel) throw new Error(`Job "${job.id}" references channel "${job.channel}" which is not running`);
+        await channel.send(job.target, output);
+      },
+    },
+  });
+
   let started = false;
+  let controlUi = null;
+
+  // Build the control UI (Phase 3) if enabled by config or options.
+  function buildControlUi() {
+    const enabled = options.controlUi ?? bool('controlUiEnabled');
+    if (!enabled) return null;
+    return createControlUi({
+      gateway,
+      config,
+      host: options.controlUiHost || config.get('controlUiHost') || '127.0.0.1',
+      port: options.controlUiPort ?? num('controlUiPort'),
+      autoApprove: options.controlUiAutoApprove ?? bool('controlUiAutoApprove'),
+    });
+  }
 
   // Build the constructor options for a named channel from config.
   function channelOptions(name) {
@@ -108,41 +211,61 @@ export function createGateway({ workingDir, configWrapper, renderer, options = {
     return {};
   }
 
-  // Wire a channel's inbound messages into the session manager.
-  function bindChannel(channel) {
-    channel.onMessage(async (message) => {
-      const text = typeof message?.text === 'string' ? message.text.trim() : '';
-      const reply = typeof message?.reply === 'function' ? message.reply : async () => {};
-      if (!text) return;
+  // Route ONE inbound message through the shared runtime. Every channel
+  // AND the control UI call this, so a dashboard message is processed
+  // exactly like a Telegram/webhook message: same sessions, same gate.
+  function selectRuntime(senderId, channelName) {
+    const id = String(senderId ?? 'anonymous');
+    for (const entry of runtimeEntries.values()) {
+      if (entry.definition.senders.includes(id)) return entry;
+    }
+    const channelMatches = [...runtimeEntries.values()].filter((entry) =>
+      entry.definition.channels.includes(channelName));
+    return channelMatches[0] || primary;
+  }
 
-      const senderId = message.senderId;
+  async function routeMessage(message, channel) {
+    const text = typeof message?.text === 'string' ? message.text.trim() : '';
+    const reply = typeof message?.reply === 'function' ? message.reply : async () => {};
+    if (!text) return;
 
-      if (text === '/start') {
-        if (typeof channel.resetApproval === 'function') channel.resetApproval();
-        await reply('🧁 QTPI is online! Send me any task or question for your codebase.');
-        return;
-      }
+    const senderId = message.senderId;
 
-      if (text === '/reset') {
-        if (typeof channel.resetApproval === 'function') channel.resetApproval();
-        sessions.reset(senderId);
-        await reply('✓ Session and approval settings reset.');
-        return;
-      }
+    if (text === '/start') {
+      if (typeof channel.resetApproval === 'function') channel.resetApproval();
+      await reply('🧁 QTPI is online! Send me any task or question for your codebase.');
+      return;
+    }
 
-      // Retarget the shared renderer + approval gate at this message.
-      channelRenderer.setTarget(message);
-      activeChannel = channel;
+    if (text === '/reset') {
+      if (typeof channel.resetApproval === 'function') channel.resetApproval();
+      selectRuntime(senderId, channel?.name).sessions.reset(senderId);
+      await reply('✓ Session and approval settings reset.');
+      return;
+    }
+
+    const entry = selectRuntime(senderId, channel?.name);
+    const run = routeLock.then(async () => {
+      const releaseAgent = await acquireAgentLock(entry.runtime.agent);
       try {
-        await sessions.run(senderId, text);
+        channelRenderer.setTarget(message);
+        activeChannel = channel;
+        await entry.sessions.run(senderId, text);
       } catch (error) {
         await reply(`❌ Execution Error: ${error.message}`);
       } finally {
         channelRenderer.setTarget(null);
         activeChannel = null;
+        releaseAgent();
       }
     });
+    routeLock = run.then(() => undefined, () => undefined);
+    await run;
+  }
 
+  // Wire a channel's inbound messages into the shared router.
+  function bindChannel(channel) {
+    channel.onMessage((message) => routeMessage(message, channel));
     return channel;
   }
 
@@ -152,17 +275,31 @@ export function createGateway({ workingDir, configWrapper, renderer, options = {
     const names = options.channels || resolveEnabledChannels(config);
     for (const name of names) {
       if (channels.has(name)) continue;
-      const channel = createChannel(name, channelOptions(name));
+      const channel = createChannel(name, channelOptions(name), runtime.plugins.channels);
       bindChannel(channel);
       await channel.start();
       channels.set(name, channel);
     }
+
+    // Control UI (Phase 3): a local dashboard over the same runtime.
+    if (!controlUi) {
+      controlUi = buildControlUi();
+      if (controlUi) await controlUi.start();
+    }
+
+    // Automation (Phase 4): schedule jobs once the runtime is live.
+    automation.start();
 
     started = true;
     return gateway;
   }
 
   async function stop() {
+    automation.stop();
+    if (controlUi) {
+      try { await controlUi.stop(); } catch { /* ignore */ }
+      controlUi = null;
+    }
     for (const channel of channels.values()) {
       try {
         await channel.stop();
@@ -179,18 +316,27 @@ export function createGateway({ workingDir, configWrapper, renderer, options = {
       started,
       channels: [...channels.keys()],
       sessions: sessions.stats(),
+      agents: [...runtimeEntries.keys()],
+      controlUi: controlUi
+        ? { running: controlUi.running, address: controlUi.address() }
+        : null,
+      automation: automation.status(),
     };
   }
 
   const gateway = {
     runtime,
+    runtimes: runtimeEntries,
     sessions,
     channels,
+    automation,
     bindChannel,
+    routeMessage,
     start,
     stop,
     status,
     get started() { return started; },
+    get controlUi() { return controlUi; },
   };
 
   return gateway;

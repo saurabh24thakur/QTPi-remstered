@@ -76,6 +76,7 @@ export function createBrowserRuntime(config, options = {}) {
       path.join(process.cwd(), '.qtpi', 'downloads'),
     maxPages: readNumber(config, 'browserMaxPages', 5),
     confirmDestructive: readBool(config, 'browserConfirmDestructive', true),
+    sandboxEnabled: readBool(config, 'sandboxEnabled', false),
     ssrf: {
       enabled: readBool(config, 'browserSsrfProtection', true),
       allowPrivate: readBool(config, 'browserAllowPrivateHosts', false),
@@ -114,6 +115,7 @@ export function createBrowserRuntime(config, options = {}) {
       browser = await chromium.launch({
         headless: settings.headless,
         downloadsPath: settings.downloadDir,
+        chromiumSandbox: settings.sandboxEnabled,
       });
 
       browser.on('disconnected', () => {

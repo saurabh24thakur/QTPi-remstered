@@ -8,7 +8,7 @@ export function createAnthropicProvider(apiKey, model) {
 
 
   
-  async function chat(messages, tools = [], onStream = null) {
+  async function chat(messages, tools = [], onStream = null, options = {}) {
 
     const systemMsg = messages.find(m => m.role === 'system');
     const systemText = systemMsg ? systemMsg.content : '';
@@ -37,10 +37,10 @@ export function createAnthropicProvider(apiKey, model) {
 
   
     if (onStream) {
-      return await handleStreaming(client, request, onStream);
+      return await handleStreaming(client, request, onStream, options);
     }
 
-    const response = await client.messages.create(request);
+    const response = await client.messages.create(request, { signal: options.signal });
 
     // Parse the response 
     return parseAnthropicResponse(response);
@@ -126,8 +126,8 @@ function parseAnthropicResponse(response) {
 
 
 
-async function handleStreaming(client, request, onStream) {
-  const stream = await client.messages.stream(request);
+async function handleStreaming(client, request, onStream, options = {}) {
+  const stream = await client.messages.stream(request, { signal: options.signal });
 
   let content = '';
   let toolCalls = [];

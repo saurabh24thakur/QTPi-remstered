@@ -22,7 +22,7 @@ export function createOpenAICompatible(providerName, apiKey, model) {
   });
 
   
-  async function chat(messages, tools = [], onStream = null) {
+  async function chat(messages, tools = [], onStream = null, options = {}) {
 
     // Build the request body
     const request = {
@@ -46,11 +46,11 @@ export function createOpenAICompatible(providerName, apiKey, model) {
 
     // ── Streaming path ──
     if (onStream) {
-      return await handleStreaming(client, request, onStream);
+      return await handleStreaming(client, request, onStream, options);
     }
 
     // ── Normal (non-streaming) path ──
-    const response = await client.chat.completions.create(request);
+    const response = await client.chat.completions.create(request, { signal: options.signal });
     const message = response.choices[0].message;
 
     return {
@@ -97,10 +97,10 @@ function normalizeToolCalls(rawToolCalls) {
 
 
 
-async function handleStreaming(client, request, onStream) {
+async function handleStreaming(client, request, onStream, options = {}) {
   request.stream = true;
 
-  const stream = await client.chat.completions.create(request);
+  const stream = await client.chat.completions.create(request, { signal: options.signal });
 
   let content = '';
   let toolCallPieces = []; 

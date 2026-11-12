@@ -1,12 +1,17 @@
 
 import { createConversation } from '../memory/ConversationHistory.js';
 import { createActionTracker } from './ActionTracker.js';
-import { executeTool, getToolDefinitions } from '../tools/ToolRegistry.js';
+import { createCapabilityRegistry, executeTool, getToolDefinitions } from '../tools/ToolRegistry.js';
 import { needsApproval, askUserApproval } from '../tools/ApprovalGate.js';
 import { formatSkillCatalog } from '../skills/skillContext.js';
 
 
 export function createAgent({ provider, tools, memory, renderer, config, workingDir, skills, approvalHandler }) {
+  let currentRenderer = renderer;
+
+  // `approvalHandler` is swap-in-able: the gateway sets a per-channel
+  // handler, the scheduler sets a per-job policy (auto-approve or reject).
+  let currentApprovalHandler = approvalHandler;
 
 
   // `let` (not `const`) so the gateway can swap in a per-sender
@@ -59,7 +64,21 @@ ${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Me
   
   // THE AGENTIC LOOP
 
-  async function run(userMessage) {
+  async function run(userMessage, runOptions = {}) {
+
+    const signal = runOptions.signal;
+    const throwIfAborted = () => {
+      if (signal?.aborted) {
+        throw signal.reason || new DOMException('The operation was aborted', 'AbortError');
+      }
+    };
+    throwIfAborted();
+
+    // Capability scoping applies to both provider-visible tools and
+    // execution, so a forged hidden tool call cannot bypass read-only mode.
+    const runTools = Array.isArray(runOptions.capabilities)
+      ? createCapabilityRegistry(tools || new Map(), runOptions.capabilities)
+      : tools;
 
     // Record user input in short-term memory
     conversation.addUserMessage(userMessage);
@@ -68,32 +87,35 @@ ${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Me
 
     // Loop until AI gives a text-only response or hits safety limit
     while (iterations < maxIterations) {
+      throwIfAborted();
       iterations++;
 
       // Show spinner while waiting for AI
-      renderer.startThinking();
+      currentRenderer.startThinking();
 
       let aiResponse;
       try {
         aiResponse = await provider.chat(
           conversation.getMessages(),
-          tools ? getToolDefinitions(tools) : [],
-          (token) => renderer.streamToken(token) //streming response
+          runTools ? getToolDefinitions(runTools) : [],
+          (token) => currentRenderer.streamToken(token), //streming response
+          { signal }
         );
       } catch (error) {
-        renderer.stopThinking();
+        currentRenderer.stopThinking();
         tracker.track('error', { message: error.message });
         throw error;
       }
 
-      renderer.stopThinking();
+      currentRenderer.stopThinking();
+      throwIfAborted();
 
       // AI wants to use tools
       if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
 
         // Render assistant text if it accompanied the tool calls
         if (aiResponse.content) {
-          renderer.renderAssistant(aiResponse.content);
+          currentRenderer.renderAssistant(aiResponse.content);
         }
 
         // Add assistant message with tool calls to conversation
@@ -104,9 +126,10 @@ ${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Me
 
         // Execute each requested tool call
         for (const toolCall of aiResponse.toolCalls) {
+          throwIfAborted();
 
           // Render tool execution notice
-          renderer.renderToolCall(toolCall.name, toolCall.arguments);
+          currentRenderer.renderToolCall(toolCall.name, toolCall.arguments);
 
           // Track tool execution attempt
           tracker.track('tool_call', {
@@ -117,26 +140,30 @@ ${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Me
           let toolResult = '';
 
           // ═══ APPROVAL GATE CHECK ═══
-          if (needsApproval(toolCall.name)) {
+          if (!runTools?.has(toolCall.name)) {
+            // Reject hidden/disallowed tools before any approval prompt.
+            toolResult = await executeTool(runTools, toolCall.name, toolCall.arguments);
+          } else if (needsApproval(toolCall.name)) {
             // A channel (Telegram, webhook, …) can supply its own approval
             // handler; otherwise fall back to the interactive terminal gate.
-            const approval = approvalHandler
-              ? await approvalHandler(toolCall.name, toolCall.arguments)
+            const approval = currentApprovalHandler
+              ? await currentApprovalHandler(toolCall.name, toolCall.arguments)
               : await askUserApproval(toolCall.name, toolCall.arguments, workingDir);
 
             if (approval === 'rejected') {
               toolResult = '❌ Action rejected by user. Do not try this action again. Find another approach or ask the user.';
             } else {
               // Approved → execute tool
-              toolResult = await executeTool(tools, toolCall.name, toolCall.arguments);
+              toolResult = await executeTool(runTools, toolCall.name, toolCall.arguments);
             }
           } else {
             // Safe tool → execute immediately
-            toolResult = await executeTool(tools, toolCall.name, toolCall.arguments);
+            toolResult = await executeTool(runTools, toolCall.name, toolCall.arguments);
           }
+          throwIfAborted();
 
           // Render tool completion
-          renderer.renderToolResult(toolCall.name, toolResult);
+          currentRenderer.renderToolResult(toolCall.name, toolResult);
 
           // Track tool result
           tracker.track('tool_result', {
@@ -155,7 +182,7 @@ ${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Me
       // ── CASE 2: AI gave a final answer (no tools) ──
       if (aiResponse.content) {
         conversation.addAssistantMessage(aiResponse.content);
-        renderer.renderAssistant(aiResponse.content);
+        currentRenderer.renderAssistant(aiResponse.content);
       }
 
       // Done with loop!
@@ -163,7 +190,7 @@ ${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Me
     }
 
     if (iterations >= maxIterations) {
-      renderer.renderWarning(
+      currentRenderer.renderWarning(
         `Reached max iterations (${maxIterations}). Loop stopped for safety.`
       );
     }
@@ -207,19 +234,45 @@ ${pastMemories ? `## Long-Term Memory (Past Sessions)\n${pastMemories}` : '## Me
     return conversation;
   }
 
+  // ── Approval-policy swapping (gateway channels / scheduled jobs) ──
+  // A caller can override the approval gate for the duration of a run
+  // (e.g. auto-approve inside a trusted scheduled job, or reject
+  // everything in a headless channel with no interactive UI).
+  function getApprovalHandler() {
+    return currentApprovalHandler;
+  }
+
+  function getRenderer() {
+    return currentRenderer;
+  }
+
+  function setRenderer(next) {
+    currentRenderer = next || renderer;
+    return currentRenderer;
+  }
+
+  function setApprovalHandler(next) {
+    currentApprovalHandler = next || undefined;
+    return currentApprovalHandler;
+  }
+
 
   return {
     run,
     get conversation() { return conversation; },
     getConversation,
     setConversation,
+    getApprovalHandler,
+    setApprovalHandler,
     tracker,
     getActionSummary,
     endSession,
     provider,
     tools,
     memory,
-    renderer,
+    get renderer() { return currentRenderer; },
+    getRenderer,
+    setRenderer,
     config,
     workingDir,
   };

@@ -4,13 +4,18 @@ import { createGeminiProvider } from './gemini.js';
 import { createOllamaProvider } from './ollama.js';
 import { getConfig } from '../config/configManager.js';
 
-export function createProvider() {
-  const providerName = getConfig('provider');
-  const apiKey = getConfig('apiKey');
-  const model = getConfig('model');
+export function createProvider(config = { get: getConfig }, extensions = new Map()) {
+  const read = (key) => config && typeof config.get === 'function' ? config.get(key) : config?.[key] ?? getConfig(key);
+  const providerName = read('provider');
+  const apiKey = read('apiKey');
+  const model = read('model');
 
   if (!providerName) {
     throw new Error('No provider configured. Run `qtpi config` first.');
+  }
+
+  if (extensions.has(providerName)) {
+    return extensions.get(providerName)({ config, providerName, apiKey, model });
   }
 
   switch (providerName) {

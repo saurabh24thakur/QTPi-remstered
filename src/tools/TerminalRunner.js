@@ -1,5 +1,5 @@
 
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import chalk from 'chalk';
 import { registerTool } from './ToolRegistry.js';
 
@@ -21,7 +21,7 @@ const DANGEROUS_PATTERNS = [
 
 
 
-export function registerTerminalTools(registry, workingDir) {
+export function registerTerminalTools(registry, workingDir, config) {
 
   registerTool(registry, 'run_command', {
     description: 'Run a shell command in the project directory. Use for: installing packages (npm install), running tests (npm test), building (npm run build), checking versions, etc.',
@@ -49,8 +49,11 @@ export function registerTerminalTools(registry, workingDir) {
     console.log(chalk.gray(`\n  $ ${command}\n`));
 
     try {
-      const output = execSync(command, {
-        cwd: workingDir,              // Run in project directory only
+      const timeoutMs = timeout * 1000;
+      const output = sandboxEnabled(config)
+        ? runSandboxed(command, workingDir, timeoutMs)
+        : execSync(command, {
+        cwd: workingDir,
         timeout: timeout * 1000,      // Convert seconds → milliseconds
         maxBuffer: 1024 * 1024,       // Max 1MB output
         encoding: 'utf-8',            // Return string, not Buffer
@@ -80,6 +83,37 @@ export function registerTerminalTools(registry, workingDir) {
         `STDOUT:\n${stdout || '(none)'}`
       );
     }
+  });
+}
+
+function sandboxEnabled(config) {
+  const value = config && typeof config.get === 'function' ? config.get('sandboxEnabled') : config?.sandboxEnabled;
+  return value === true || (typeof value === 'string' && value.toLowerCase() === 'true');
+}
+
+export function buildSandboxArgs(workingDir, command) {
+  return [
+    '--die-with-parent', '--unshare-all',
+    '--ro-bind', '/', '/',
+    '--bind', workingDir, workingDir,
+    '--tmpfs', '/tmp', '--proc', '/proc', '--dev', '/dev',
+    '--chdir', workingDir, '--clearenv',
+    '--setenv', 'PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    '--setenv', 'HOME', '/tmp',
+    '/bin/sh', '-lc', command,
+  ];
+}
+
+function runSandboxed(command, workingDir, timeout) {
+  if (process.platform !== 'linux') {
+    throw new Error('QTPI_SANDBOX_ENABLED requires Linux with bubblewrap (bwrap); command was not run.');
+  }
+  return execFileSync('bwrap', buildSandboxArgs(workingDir, command), {
+    cwd: workingDir,
+    timeout,
+    maxBuffer: 1024 * 1024,
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
 }
 

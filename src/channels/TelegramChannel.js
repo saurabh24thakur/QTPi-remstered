@@ -1,6 +1,6 @@
 import { Telegraf } from 'telegraf';
 import chalk from 'chalk';
-import { createRuntime } from '../runtime/createRuntime.js';
+import { createRuntimeWithPlugins } from '../runtime/createRuntime.js';
 import { getConfig } from '../config/configManager.js';
 import { askTelegramApproval, resetTelegramApproval } from './TelegramApproval.js';
 import { assertChannel, createChannelRenderer, bindChannelToRuntime } from './Channel.js';
@@ -116,7 +116,7 @@ export async function startTelegramBot(botToken, configData) {
   // Build the SAME runtime the CLI uses (provider + all tools + memory +
   // skills + agent). This is what fixes the old drift where Telegram was
   // missing the web, browser and skill tools.
-  const runtime = createRuntime({
+  const runtime = await createRuntimeWithPlugins({
     workingDir,
     configWrapper,
     renderer,

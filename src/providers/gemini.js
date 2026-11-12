@@ -7,7 +7,7 @@ export function createGeminiProvider(apiKey, model) {
   const genAI = new GoogleGenerativeAI(apiKey);
 
 
-  async function chat(messages, tools = [], onStream = null) {
+  async function chat(messages, tools = [], onStream = null, options = {}) {
 
     const systemMsg = messages.find(m => m.role === 'system');
     const systemText = systemMsg ? systemMsg.content : '';
@@ -36,10 +36,10 @@ export function createGeminiProvider(apiKey, model) {
     const geminiModel = genAI.getGenerativeModel(modelConfig);
 
     if (onStream) {
-      return await handleStreaming(geminiModel, geminiHistory, onStream);
+      return await handleStreaming(geminiModel, geminiHistory, onStream, options);
     }
 
-    const result = await geminiModel.generateContent({ contents: geminiHistory });
+    const result = await geminiModel.generateContent({ contents: geminiHistory, signal: options.signal });
     const response = result.response;
 
     return parseGeminiResponse(response);
@@ -160,8 +160,8 @@ function removeKey(obj, keyToRemove) {
 
 
 
-async function handleStreaming(geminiModel, history, onStream) {
-  const result = await geminiModel.generateContentStream({ contents: history });
+async function handleStreaming(geminiModel, history, onStream, options = {}) {
+  const result = await geminiModel.generateContentStream({ contents: history, signal: options.signal });
 
   let content = '';
   let toolCalls = [];

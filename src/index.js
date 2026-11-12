@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { createInterface } from 'readline/promises';
 
-import { createRuntime } from './runtime/createRuntime.js';
+import { createRuntimeWithPlugins } from './runtime/createRuntime.js';
 
 // RAG/Qdrant tool (used by the /index slash command)
 import { createVectorStore } from './rag/VectorStore.js';
@@ -26,7 +26,7 @@ export async function startAgent(options = {}) {
   //  CLI's existing "render an error and exit" behavior.
   let runtime;
   try {
-    runtime = createRuntime({
+    runtime = await createRuntimeWithPlugins({
       workingDir,
       renderer,
       options: { memory: options.memory },
